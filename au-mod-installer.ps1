@@ -900,10 +900,10 @@ function Install-BetterCrewLink {
 # =========================
 # MAIN (interactive, loops back)
 # =========================
-while ($true) {
+:MainMenu while ($true) {
   try {
     Show-Banner
-    Show-Menu   # ← use your animated menu here
+    Show-Menu
 
     $choice = Read-Choice -Prompt 'Select option (1/2/3/4 or Q to quit) [1]:' -Default '1'
     switch ($choice) {
@@ -911,13 +911,17 @@ while ($true) {
       '2' { try { Update-ModPack }         finally { Remove-WorkingFolder }; Write-TypeLines -Lines @('Done. Returning to menu...') -Colors @('Green') }
       '3' { try { Restore-Vanilla }        finally { Remove-WorkingFolder }; Write-TypeLines -Lines @('Done. Returning to menu...') -Colors @('Green') }
       '4' { try { Install-BetterCrewLink } finally { Remove-WorkingFolder }; Write-TypeLines -Lines @('Done. Returning to menu...') -Colors @('Green') }
-      'q' { Write-TypeLines -Lines @('Goodbye!') -Colors @('Green'); break }
+      'q' {
+        Write-TypeLines -Lines @('Goodbye!') -TotalSeconds 1.4 -Colors @('Green')
+        Remove-WorkingFolder
+        break MainMenu   # exits the while loop
+      }
     }
 
     Start-Sleep -Milliseconds 700
   }
   catch {
-    Write-TypeLines -Lines @("ERROR: $($_.Exception.Message)", 'Returning to menu...') -Colors @('Red','Yellow')
+    Write-TypeLines -Lines @("ERROR: $($_.Exception.Message)", 'Returning to menu...') -TotalSeconds 1.4 -Colors @('Red','Yellow')
     Start-Sleep -Milliseconds 900
   }
 }
