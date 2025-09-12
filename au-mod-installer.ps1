@@ -72,28 +72,28 @@ function Read-Choice {
     $in = Read-Host $Prompt
     if ([string]::IsNullOrWhiteSpace($in)) { $in = $Default }
     switch ($in) { '1' {return '1'} '2' {return '2'} '3' {return '3'} '4' {return '4'} 'q' {return 'q'} 'Q' {return 'q'} }
-    Write-Warn2 'Please enter 1, 2, 3, 4 or Q.'
+    Write-Warn2 'Please enter 1, 2, 3, 4 or Q. and press ENTER'
   }
 }
 
 
 function Read-YQ {
-  param([string]$Prompt = 'Continue? (y/q):')
+  param([string]$Prompt = 'Continue? (Y - Yes, q - Quit and press ENTER):')
   while ($true) {
     $in = (Read-Host $Prompt).Trim()
     if ($in -match '^(y|Y)$') { return 'y' }
     if ($in -match '^(q|Q)$') { return 'q' }
-    Write-Warn2 "Please type 'y' to continue or 'q' to quit."
+    Write-Warn2 "Please type 'Y' to continue or 'Q' to quit."
   }
 }
 
 function Read-YN {
-  param([string]$Prompt = 'Install Better-CrewLink now? (y/n): ')
+  param([string]$Prompt = 'Install Better-CrewLink now? (Y - for Yes, N - for No and press ENTER): ')
   while ($true) {
     $in = (Read-Host $Prompt).Trim()
     if ($in -match '^(y|Y)$') { return $true }
     if ($in -match '^(n|N)$') { return $false }
-    Write-Warn2 "Please type 'y' or 'n'."
+    Write-Warn2 "Please type 'y' or 'n' and press ENTER."
   }
 }
 
@@ -850,7 +850,7 @@ function Install-BetterCrewLink {
   Ensure-Tls12
 
   if (Test-BCLInstalled) {
-    function Read-YNLocal { param([string]$Prompt='Reinstall Better-CrewLink? (y/n):')
+    function Read-YNLocal { param([string]$Prompt='Reinstall Better-CrewLink? (Y - for Yes, N - for No and press ENTER):')
       while ($true) { $in = (Read-Host $Prompt).Trim(); if ($in -match '^(y|Y)$'){return $true}; if($in -match '^(n|N)$'){return $false}; Write-Warn2 "Please type 'y' or 'n'." }
     }
     if (-not (Read-YNLocal)) { Write-Info "Skipping Better-CrewLink install."; return }
@@ -888,7 +888,7 @@ function Install-BetterCrewLink {
   }
 
   while (-not (Test-BCLInstalled)) {
-    function Read-YNLocal2 { param([string]$Prompt='Still not detected. Return to menu? (y/n):')
+    function Read-YNLocal2 { param([string]$Prompt='Still not detected. Return to menu? (Y - for Yes, N - for No and press ENTER):')
       while ($true) { $in = (Read-Host $Prompt).Trim(); if ($in -match '^(y|Y)$'){return $true}; if($in -match '^(n|N)$'){return $false}; Write-Warn2 "Please type 'y' or 'n'." }
     }
     if (Read-YNLocal2) { Write-Warn2 "Returning to menu without confirming Better-CrewLink installation."; return }
@@ -905,7 +905,7 @@ function Install-BetterCrewLink {
     Show-Banner
     Show-Menu
 
-    $choice = Read-Choice -Prompt 'Select option (1/2/3/4 or Q to quit) [1]:' -Default '1'
+    $choice = Read-Choice -Prompt 'Select option (1/2/3/4 or Q to quit and press ENTER) [1]:' -Default '1'
     switch ($choice) {
       '1' { try { Install-ToU }            finally { Remove-WorkingFolder }; Write-TypeLines -Lines @('Done. Returning to menu...') -Colors @('Green') }
       '2' { try { Update-ModPack }         finally { Remove-WorkingFolder }; Write-TypeLines -Lines @('Done. Returning to menu...') -Colors @('Green') }
