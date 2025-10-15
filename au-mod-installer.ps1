@@ -562,8 +562,9 @@ function Install-ToU {
 
   Write-TypeLines -Lines @(
     'Manual validation (Steam client):',
-    "  Library -> Right-click '$($script:AppName)' -> Properties -> Installed Files -> Verify integrity of game files"
-  ) -Colors @('Cyan','DarkGray')
+    "  Library -> Right-click '$($script:AppName)' -> Properties -> Installed Files -> Verify integrity of game files",
+    'If you already verified before launching this script, press Y and ENTER to continue...'
+  ) -Colors @('Cyan','DarkGray','Yellow')
 
   Write-Host ''
   $ans = Read-YQ 'When validation is finished, type y and press ENTER to continue (or q to quit): '
@@ -925,3 +926,4 @@ function Install-BetterCrewLink {
     Start-Sleep -Milliseconds 900
   }
 }
+
