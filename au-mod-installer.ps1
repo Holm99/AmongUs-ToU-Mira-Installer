@@ -12,7 +12,7 @@ $script:LogPath      = Join-Path $env:USERPROFILE 'Downloads\au-installer-latest
 $script:Paths        = $null
 $script:GameDir      = $null
 $script:GameDirBck   = $null
-$script:speed        = 0
+$script:speed        = 0.2
 
 $ProgressPreference = 'SilentlyContinue'
 $script:LastLogLine = $null
@@ -1516,5 +1516,6 @@ try {
 }
 
 Write-Log -Level 'INFO' -Message ("===== Session End =====")
+
 
 
