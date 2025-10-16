@@ -141,13 +141,29 @@ function Write-LogSection {
 function Write-TypeLines {
   param(
     [Parameter(Mandatory)][string[]]$Lines,
-    [double]$TotalSeconds = 1.0,
+    [double]$TotalSeconds = $script:speed,   # <- default comes from your global
     [string[]]$Colors
   )
+
+  # Instant mode: if speed <= 0, just print lines with optional color and return
+  if ($TotalSeconds -le 0) {
+    for ($li=0; $li -lt $Lines.Count; $li++) {
+      $line  = $Lines[$li]
+      $color = if ($Colors -and $Colors.Count -gt $li) { $Colors[$li] } else { $null }
+      if ($color) { Write-Host $line -ForegroundColor $color } else { Write-Host $line }
+    }
+    return
+  }
+
   $totalChars = ($Lines | ForEach-Object { $_.Length } | Measure-Object -Sum).Sum
   if ($totalChars -lt 1) { $totalChars = 1 }
+
+  # Use min/max from a single place if you want; these work nicely
+  $minDelayMs = 5
+  $maxDelayMs = 30
   $delayMs = [int][Math]::Round(($TotalSeconds * 1000) / $totalChars)
-  $delayMs = [Math]::Max(5, [Math]::Min(30, $delayMs))
+  $delayMs = [Math]::Max($minDelayMs, [Math]::Min($maxDelayMs, $delayMs))
+
   for ($li=0; $li -lt $Lines.Count; $li++) {
     $line  = $Lines[$li]
     $color = if ($Colors -and $Colors.Count -gt $li) { $Colors[$li] } else { $null }
@@ -159,10 +175,10 @@ function Write-TypeLines {
   }
 }
 
-function Write-Info  { param([string]$m) Write-TypeLines -Lines @($m) -TotalSeconds $script:speed -Colors @('Cyan');    Write-Log -Level 'INFO'  -Message $m }
-function Write-Ok    { param([string]$m) Write-TypeLines -Lines @($m) -TotalSeconds $script:speed -Colors @('Green');   Write-Log -Level 'OK'    -Message $m }
-function Write-Warn2 { param([string]$m) Write-TypeLines -Lines @($m) -TotalSeconds $script:speed -Colors @('Yellow');  Write-Log -Level 'WARN'  -Message $m }
-function Write-Err2  { param([string]$m) Write-TypeLines -Lines @($m) -TotalSeconds $script:speed -Colors @('Red');     Write-Log -Level 'ERROR' -Message $m }
+function Write-Info  { param([string]$m) Write-TypeLines -Lines @($m) -Colors @('Cyan');    Write-Log -Level 'INFO'  -Message $m }
+function Write-Ok    { param([string]$m) Write-TypeLines -Lines @($m) -Colors @('Green');   Write-Log -Level 'OK'    -Message $m }
+function Write-Warn2 { param([string]$m) Write-TypeLines -Lines @($m) -Colors @('Yellow');  Write-Log -Level 'WARN'  -Message $m }
+function Write-Err2  { param([string]$m) Write-TypeLines -Lines @($m) -Colors @('Red');     Write-Log -Level 'ERROR' -Message $m }
 
 # ======================================================
 # UI
@@ -185,11 +201,16 @@ function Show-Banner {
 
 function Show-ProgressDots {
   param([string]$Label = 'Working', [int]$Seconds = 3)
+  $tickMs = [int](1000 * [Math]::Max(0.05, $script:speed))
+  if ($script:speed -le 0) { $tickMs = 1 }
   $frames = @('....','.........','.............')
-  for ($i=0; $i -lt $Seconds; $i++) {
+  $elapsed = 0
+  while ($elapsed -lt ($Seconds * 1000)) {
+    $i = [int]([Math]::Floor($elapsed / $tickMs))
     $dots = if ($i -lt $frames.Count) { $frames[$i] } else { '.' * (4 + 4*$i) }
     Write-Host -NoNewline ("`r{0} {1} " -f $Label, $dots)
-    Start-Sleep -Seconds 1
+    Start-Sleep -Milliseconds $tickMs
+    $elapsed += $tickMs
   }
   Write-Host
 }
