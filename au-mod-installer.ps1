@@ -3,32 +3,71 @@ Set-StrictMode -Version 2.0
 $ErrorActionPreference = 'Stop'
 [Console]::OutputEncoding = [Text.UTF8Encoding]::UTF8
 
-# -------------------------
-# Config / Constants
-# -------------------------
-$script:AppId   = 945360
-$script:AppName = 'Among Us'
+# ======================================================
+# Config
+# ======================================================
+$script:AppId        = 945360
+$script:AppName      = 'Among Us'
+$script:LogPath      = Join-Path $env:USERPROFILE 'Downloads\au-installer-latest.log'
+$script:Paths        = $null
+$script:GameDir      = $null
+$script:GameDirBck   = $null
 
-# køkk
+# ======================================================
+# Logging
+# ======================================================
+function New-Ts { Get-Date -Format 'yyyy-MM-dd HH:mm:ss' }
 
-# -------------------------
-# UI helpers
-# -------------------------
-function Show-ProgressDots {
-  param([string]$Label = 'Working', [int]$Seconds = 3)
-  $frames = @('....','.........','.............')
-  for ($i=0; $i -lt $Seconds; $i++) {
-    $dots = if ($i -lt $frames.Count) { $frames[$i] } else { '.' * (4 + 4*$i) }
-    Write-Host -NoNewline ("`r{0} {1} " -f $Label, $dots)
-    Start-Sleep -Seconds 1
+function Start-InstallerLog {
+  try {
+    # Overwrite on each run
+    "[{0}] [INFO] ===== Among Us Mod Installer — Session Start =====" -f (New-Ts) | Set-Content -LiteralPath $script:LogPath -Encoding UTF8
+    "[{0}] [INFO] Log file: {1}" -f (New-Ts), $script:LogPath | Add-Content -LiteralPath $script:LogPath
+
+    # Environment header
+    $envInfo = [pscustomobject]@{
+      User              = "$env:USERNAME"
+      Machine           = "$env:COMPUTERNAME"
+      PSVersion         = ($PSVersionTable.PSVersion.ToString())
+      OSVersion         = ([System.Environment]::OSVersion.VersionString)
+      Culture           = (Get-Culture).Name
+      UIculture         = (Get-UICulture).Name
+      Is64BitProcess    = [Environment]::Is64BitProcess
+      Is64BitOS         = [Environment]::Is64BitOperatingSystem
+      ScriptPath        = $MyInvocation.PSCommandPath
+      WorkingDirectory  = (Get-Location).Path
+    }
+    "[{0}] [INFO] --- Environment ---------------------------------" -f (New-Ts) | Add-Content $script:LogPath
+    $envInfo | ConvertTo-Json -Depth 3 | Add-Content -LiteralPath $script:LogPath
+    "[{0}] [INFO] --------------------------------------------------" -f (New-Ts) | Add-Content $script:LogPath
+  } catch {
+    Write-Host "Failed to initialize log: $($_.Exception.Message)" -ForegroundColor Red
   }
-  Write-Host
 }
 
+function Write-Log {
+  param(
+    [Parameter(Mandatory)][ValidateSet('INFO','OK','WARN','ERROR','ACTION','RESULT','STATUS')][string]$Level,
+    [Parameter(Mandatory)][string]$Message
+  )
+  try {
+    "[{0}] [{1}] {2}" -f (New-Ts), $Level, $Message | Add-Content -LiteralPath $script:LogPath
+  } catch {}
+}
+
+function Write-LogSection {
+  param([Parameter(Mandatory)][string]$Title)
+  $bar = ('-' * 66)
+  Add-Content -LiteralPath $script:LogPath -Value $bar
+  Add-Content -LiteralPath $script:LogPath -Value ("[{0}] [SECTION] {1}" -f (New-Ts), $Title)
+  Add-Content -LiteralPath $script:LogPath -Value $bar
+}
+
+# Wrap console writers so they also log
 function Write-TypeLines {
   param(
     [Parameter(Mandatory)][string[]]$Lines,
-    [double]$TotalSeconds = 1.4,
+    [double]$TotalSeconds = 1.0,
     [string[]]$Colors
   )
   $totalChars = ($Lines | ForEach-Object { $_.Length } | Measure-Object -Sum).Sum
@@ -38,6 +77,10 @@ function Write-TypeLines {
   for ($li=0; $li -lt $Lines.Count; $li++) {
     $line  = $Lines[$li]
     $color = if ($Colors -and $Colors.Count -gt $li) { $Colors[$li] } else { $null }
+
+    # Log plain line text
+    Write-Log -Level 'INFO' -Message $line
+
     foreach ($ch in $line.ToCharArray()) {
       if ($color) { Write-Host -NoNewline $ch -ForegroundColor $color } else { Write-Host -NoNewline $ch }
       Start-Sleep -Milliseconds $delayMs
@@ -45,13 +88,34 @@ function Write-TypeLines {
     Write-Host ''
   }
 }
+function Write-Info  { param([string]$m) Write-Log -Level 'INFO'  -Message $m; Write-TypeLines -Lines @($m) -TotalSeconds 1 -Colors @('Cyan') }
+function Write-Ok    { param([string]$m) Write-Log -Level 'OK'    -Message $m; Write-TypeLines -Lines @($m) -TotalSeconds 1 -Colors @('Green') }
+function Write-Warn2 { param([string]$m) Write-Log -Level 'WARN'  -Message $m; Write-TypeLines -Lines @($m) -TotalSeconds 1 -Colors @('Yellow') }
+function Write-Err2  { param([string]$m) Write-Log -Level 'ERROR' -Message $m; Write-TypeLines -Lines @($m) -TotalSeconds 1 -Colors @('Red') }
 
-# Route all info/warn/ok/err through typewriter (1.4s lines)
-function Write-Info  { param([string]$m) Write-TypeLines -Lines @($m) -TotalSeconds 1 -Colors @('Cyan') }
-function Write-Ok    { param([string]$m) Write-TypeLines -Lines @($m) -TotalSeconds 1 -Colors @('Green') }
-function Write-Warn2 { param([string]$m) Write-TypeLines -Lines @($m) -TotalSeconds 1 -Colors @('Yellow') }
-function Write-Err2  { param([string]$m) Write-TypeLines -Lines @($m) -TotalSeconds 1 -Colors @('Red') }
+# Robocopy capture helpers
+function Write-RobocopyHeader {
+  param([string]$Title = 'ROBOCOPY OUTPUT')
+  $bar = ('-' * 86)
+  Add-Content -LiteralPath $script:LogPath -Value ""
+  Add-Content -LiteralPath $script:LogPath -Value $bar
+  Add-Content -LiteralPath $script:LogPath -Value ("[{0}] [INFO] <<< {1} START >>>" -f (New-Ts), $Title)
+  Add-Content -LiteralPath $script:LogPath -Value $bar
+  Add-Content -LiteralPath $script:LogPath -Value ""
+}
+function Write-RobocopyFooter {
+  param([string]$Title = 'ROBOCOPY OUTPUT')
+  $bar = ('-' * 86)
+  Add-Content -LiteralPath $script:LogPath -Value ""
+  Add-Content -LiteralPath $script:LogPath -Value $bar
+  Add-Content -LiteralPath $script:LogPath -Value ("[{0}] [INFO] <<< {1} END >>>" -f (New-Ts), $Title)
+  Add-Content -LiteralPath $script:LogPath -Value $bar
+  Add-Content -LiteralPath $script:LogPath -Value ""
+}
 
+# ======================================================
+# UI
+# ======================================================
 function Show-Banner {
 @'
 
@@ -68,99 +132,64 @@ function Show-Banner {
 '@ | Write-Host -ForegroundColor Green
 }
 
+function Show-ProgressDots {
+  param([string]$Label = 'Working', [int]$Seconds = 3)
+  $frames = @('....','.........','.............')
+  for ($i=0; $i -lt $Seconds; $i++) {
+    $dots = if ($i -lt $frames.Count) { $frames[$i] } else { '.' * (4 + 4*$i) }
+    Write-Host -NoNewline ("`r{0} {1} " -f $Label, $dots)
+    Start-Sleep -Seconds 1
+  }
+  Write-Host
+}
+
 function Read-Choice {
-  param([string]$Prompt,[ValidateSet('1','2','3','4','q','Q')]$Default)
+  param([string]$Prompt,[string[]]$Allowed,[string]$Default)
   while ($true) {
     $in = Read-Host $Prompt
     if ([string]::IsNullOrWhiteSpace($in)) { $in = $Default }
-    switch ($in) { '1' {return '1'} '2' {return '2'} '3' {return '3'} '4' {return '4'} 'q' {return 'q'} 'Q' {return 'q'} }
-    Write-Warn2 'Please enter 1, 2, 3, 4 or Q. and press ENTER'
+    if ($Allowed -contains $in) {
+      Write-Log -Level 'ACTION' -Message ("Menu choice: {0}" -f $in)
+      return $in
+    }
+    Write-Warn2 "Please enter one of: $($Allowed -join ', ') and press ENTER."
   }
 }
-
-
 function Read-YQ {
   param([string]$Prompt = 'Continue? (Y - Yes, q - Quit and press ENTER):')
   while ($true) {
     $in = (Read-Host $Prompt).Trim()
-    if ($in -match '^(y|Y)$') { return 'y' }
-    if ($in -match '^(q|Q)$') { return 'q' }
+    if ($in -match '^(y|Y)$') { Write-Log -Level 'ACTION' -Message "Prompt accepted: $Prompt"; return 'y' }
+    if ($in -match '^(q|Q)$') { Write-Log -Level 'ACTION' -Message "Prompt quit: $Prompt"; return 'q' }
     Write-Warn2 "Please type 'Y' to continue or 'Q' to quit."
   }
 }
-
 function Read-YN {
   param([string]$Prompt = 'Install Better-CrewLink now? (Y - for Yes, N - for No and press ENTER): ')
   while ($true) {
     $in = (Read-Host $Prompt).Trim()
-    if ($in -match '^(y|Y)$') { return $true }
-    if ($in -match '^(n|N)$') { return $false }
+    if ($in -match '^(y|Y)$') { Write-Log -Level 'ACTION' -Message "Answered YES: $Prompt"; return $true }
+    if ($in -match '^(n|N)$') { Write-Log -Level 'ACTION' -Message "Answered NO: $Prompt";  return $false }
     Write-Warn2 "Please type 'y' or 'n' and press ENTER."
   }
 }
 
-
-function Show-Menu {
-  Write-Host ''
-  Write-Host ''
-  Write-TypeLines -Lines @(
-    '  1) Install Among Us - ToU Mira',
-    '  2) Update',
-    '  3) Restore Vanilla',
-    '  4) Install BetterCrewLink',
-    '  Q) Quit'
-  ) -Colors @('Green','Yellow','Red','Magenta','DarkGray')
-  Write-Host ''
-  Write-Host ''
-}
-
-# -------------------------
-# Paths / Folders
-# -------------------------
-function Initialize-Paths {
-  $base = Join-Path $env:USERPROFILE 'Downloads\AmongUsModInstaller'
-  $paths = [pscustomobject]@{
-    Base      = $base
-    Tools     = Join-Path $base 'tools'
-    Temp      = Join-Path $base 'temp'
-    Downloads = Join-Path $base 'downloads'
-  }
-  foreach ($p in $paths.PSObject.Properties.Value) {
-    if (-not (Test-Path $p)) { New-Item -ItemType Directory -Path $p | Out-Null }
-  }
-  $script:Paths = $paths
-}
-
-function Remove-WorkingFolder {
-  if (-not $script:Paths -or -not (Test-Path $script:Paths.Base)) { return }
-  Write-Info "Cleaning up: $($script:Paths.Base)"
-  try {
-    Get-ChildItem -LiteralPath $script:Paths.Base -Recurse -Force -ErrorAction SilentlyContinue | ForEach-Object {
-      try { $_.Attributes = 'Normal' } catch {}
-    }
-    Remove-Item -LiteralPath $script:Paths.Base -Recurse -Force -ErrorAction Stop
-    Write-Ok 'Cleanup complete.'
-  } catch {
-    Write-Warn2 "Cleanup failed: $($_.Exception.Message)"
-  }
-}
-
-# -------------------------
+# ======================================================
 # Networking
-# -------------------------
+# ======================================================
 function Ensure-Tls12 {
   try {
-    [Net.ServicePointManager]::SecurityProtocol = `
-      [Net.SecurityProtocolType]::Tls12 -bor `
+    [Net.ServicePointManager]::SecurityProtocol =
+      [Net.SecurityProtocolType]::Tls12 -bor
       [Net.SecurityProtocolType]::Tls13
   } catch {
     [Net.ServicePointManager]::SecurityProtocol = [Net.SecurityProtocolType]::Tls12
   }
 }
 
-# -------------------------
+# ======================================================
 # Steam discovery
-# -------------------------
+# ======================================================
 function Get-SteamRoot {
   $roots = @()
   $pairs = @(
@@ -213,10 +242,48 @@ function Get-SteamLibraries {
   } | Select-Object -Unique
 }
 
+# ======================================================
+# Paths / Working folders
+# ======================================================
+function Initialize-Paths {
+  $base = Join-Path $env:USERPROFILE 'Downloads\AmongUsModInstaller'
+  $paths = [pscustomobject]@{
+    Base      = $base
+    Tools     = Join-Path $base 'tools'
+    Temp      = Join-Path $base 'temp'
+    Downloads = Join-Path $base 'downloads'
+  }
+  foreach ($p in $paths.PSObject.Properties.Value) {
+    if (-not (Test-Path $p)) { New-Item -ItemType Directory -Path $p | Out-Null }
+  }
+  $script:Paths = $paths
+  Write-Log -Level 'STATUS' -Message ("Working folder: {0}" -f $paths.Base)
+}
+
+function Remove-WorkingFolder {
+  $p = (Get-Variable -Name Paths -Scope Script -ErrorAction SilentlyContinue).Value
+  if (-not $p) { return }
+  if (-not (Test-Path $p.Base)) { return }
+
+  Write-Info "Cleaning up: $($p.Base)"
+  try {
+    Get-ChildItem -LiteralPath $p.Base -Recurse -Force -ErrorAction SilentlyContinue | ForEach-Object {
+      try { $_.Attributes = 'Normal' } catch {}
+    }
+    Remove-Item -LiteralPath $p.Base -Recurse -Force -ErrorAction Stop
+    Write-Ok 'Cleanup complete.'
+  } catch {
+    Write-Warn2 "Cleanup failed: $($_.Exception.Message)"
+  }
+}
+
+# ======================================================
+# Generic helpers
+# ======================================================
 function Test-DirHasContent {
   param([Parameter(Mandatory)][string]$Path)
   try {
-    $any = Get-ChildItem -LiteralPath $Path -File -Recurse -ErrorAction Stop | Select-Object -First 1
+    $any = Get-ChildItem -LiteralPath $Path -Recurse -File -ErrorAction Stop | Select-Object -First 1
     return [bool]$any
   } catch { return $false }
 }
@@ -239,9 +306,6 @@ function Get-GamePath {
   return $null
 }
 
-# -------------------------
-# Folder picker
-# -------------------------
 function Select-Folder {
   param([string]$Description = "Select a folder",[string]$Initial = $env:USERPROFILE)
   try {
@@ -276,16 +340,320 @@ if ($dlg.ShowDialog() -eq [System.Windows.Forms.DialogResult]::OK) { [Console]::
   return $p
 }
 
-# -------------------------
-# Backup helpers
-# -------------------------
+# ======================================================
+# Version helpers
+# ======================================================
+function Normalize-VersionTag { param([Parameter(Mandatory)][string]$Tag) ($Tag -replace '^[vV]', '').Trim() }
+
+function Compare-Versions {
+  param([string]$A,[string]$B) # returns -1,0,1
+  if ([string]::IsNullOrWhiteSpace($A) -and [string]::IsNullOrWhiteSpace($B)) { return 0 }
+  if ([string]::IsNullOrWhiteSpace($A)) { return -1 }
+  if ([string]::IsNullOrWhiteSpace($B)) { return 1 }
+  try { return ([version]$A).CompareTo([version]$B) } catch { if ($A -eq $B) { 0 } else { -1 } }
+}
+
+# ======================================================
+# Resolve game dir
+# ======================================================
+function Resolve-GameDirSilent {
+  try {
+    $roots = Get-SteamRoot
+    $libs  = Get-SteamLibraries -SteamRoots $roots
+    $auto  = Get-GamePath -CommonRoots $libs
+    if ($auto) { return (Resolve-Path $auto).Path }
+  } catch {}
+  return $null
+}
+function Resolve-GameDirInteractive {
+  Show-ProgressDots -Label 'Searching for Game Directory' -Seconds 3
+  $roots = Get-SteamRoot
+  $libs  = Get-SteamLibraries -SteamRoots $roots
+  $auto  = Get-GamePath -CommonRoots $libs
+  if ($auto) {
+    Write-TypeLines -Lines @("Found '$($script:AppName)' Installation: $auto") -Colors @('Green')
+    Write-Log -Level 'RESULT' -Message ("GameDir (auto): {0}" -f $auto)
+    return (Resolve-Path $auto).Path
+  }
+  Write-TypeLines -Lines @("No '$($script:AppName)' installation detected automatically.") -Colors @('Red')
+  while ($true) {
+    $initial = if ($libs) { $libs | Select-Object -First 1 } else { $env:ProgramFiles }
+    $pick = Select-Folder -Description "Select '$($script:AppName)' game folder (must contain 'Among Us.exe')" -Initial $initial
+    if (-not $pick) {
+      $ans = Read-YQ "No folder selected. Try again? (y/q): "
+      if ($ans -eq 'q') { return $null } else { continue }
+    }
+    if (Test-Path (Join-Path $pick 'Among Us.exe')) {
+      Write-Log -Level 'RESULT' -Message ("GameDir (manual): {0}" -f $pick)
+      return (Resolve-Path $pick).Path
+    }
+    Write-Warn2 "Selected folder does NOT contain 'Among Us.exe'."
+    $ans = Read-YQ "Pick another folder? (y/q): "
+    if ($ans -eq 'q') { return $null }
+  }
+}
+
+# ======================================================
+# Backup detection + state
+# ======================================================
+function Find-BackupDirGlobal {
+  try {
+    $roots   = Get-SteamRoot
+    $commons = Get-SteamLibraries -SteamRoots $roots
+    foreach ($c in $commons) {
+      $cand = Join-Path $c 'Among Us - Bck'
+      if (Test-Path $cand) {
+        if (Test-Path (Join-Path $cand 'Among Us.exe')) { return (Resolve-Path $cand).Path }
+        try {
+          $any = Get-ChildItem -LiteralPath $cand -Recurse -File -ErrorAction Stop | Select-Object -First 1
+          if ($any) { return (Resolve-Path $cand).Path }
+        } catch {}
+      }
+    }
+  } catch {}
+  return $null
+}
+function Test-BackupAvailable {
+  param([string]$GameDir)
+  try {
+    if ($GameDir -and (Test-Path $GameDir)) {
+      $parent = Split-Path -Parent $GameDir
+      $sibling = Join-Path $parent 'Among Us - Bck'
+      if (Test-Path $sibling) { return $true }
+    }
+  } catch {}
+  return [bool](Find-BackupDirGlobal)
+}
+function Test-ModInstalled {
+  param([string]$GameDir)
+  if (-not $GameDir -or -not (Test-Path $GameDir)) { $GameDir = Resolve-GameDirSilent }
+  if (-not $GameDir) { return $false }
+  return Test-Path (Join-Path $GameDir 'TownOfUsMira.dll')
+}
 function Get-ExeVersion {
   param([Parameter(Mandatory)][string]$GameDir)
   $exe = Join-Path $GameDir 'Among Us.exe'
   if (Test-Path $exe) { return (Get-Item $exe).VersionInfo.FileVersion }
   return $null
 }
+function Get-InstalledTouMiraVersion {
+  param([string]$GameDir)
+  try {
+    if (-not $GameDir -or -not (Test-Path $GameDir)) { $GameDir = Resolve-GameDirSilent }
+    if (-not $GameDir) { return $null }
+    $dll = Join-Path $GameDir 'TownOfUsMira.dll'
+    if (Test-Path $dll) {
+      $v = (Get-Item $dll).VersionInfo.ProductVersion
+      if ($v) { return $v.Trim() }
+    }
+  } catch {}
+  return $null
+}
 
+# ======================================================
+# BetterCrewLink helpers
+# ======================================================
+function Get-LatestBetterCrewLinkVersion {
+  Ensure-Tls12
+  try {
+    $api  = 'https://api.github.com/repos/OhMyGuus/BetterCrewLink/releases/latest'
+    $hdrs = @{ 'User-Agent'='AU-Installer'; 'Accept'='application/vnd.github+json' }
+    Write-Log -Level 'ACTION' -Message ("GET {0}" -f $api)
+    $r = Invoke-WebRequest -UseBasicParsing -Uri $api -Headers $hdrs -ErrorAction Stop
+    $j = $r.Content | ConvertFrom-Json
+    if ($j.tag_name) { return $j.tag_name }  # e.g. v3.1.4
+  } catch {}
+  try {
+    $url = 'https://github.com/OhMyGuus/BetterCrewLink/releases/latest'
+    Write-Log -Level 'ACTION' -Message ("HEAD {0}" -f $url)
+    $req = [System.Net.HttpWebRequest]::Create($url)
+    $req.Method = 'HEAD'
+    $req.AllowAutoRedirect = $false
+    $req.UserAgent = 'AU-Installer'
+    $resp = $req.GetResponse()
+    $loc  = $resp.Headers['Location']
+    $resp.Close()
+    if ($loc -and ($loc -match '/tag/([^/]+)$')) { return $matches[1] }
+  } catch {}
+  throw "Unable to determine latest BetterCrewLink version."
+}
+function Get-BCLDownloadInfo {
+  param([Parameter(Mandatory)][string]$Tag)
+  $verNoV = if ($Tag.StartsWith('v')) { $Tag.Substring(1) } else { $Tag }
+  $name   = "Better-CrewLink-Setup-$verNoV.exe"
+  $url    = "https://github.com/OhMyGuus/BetterCrewLink/releases/download/$Tag/$name"
+  Write-Log -Level 'STATUS' -Message ("BCL Download => Tag: {0}, Url: {1}, Name: {2}" -f $Tag, $url, $name)
+  [pscustomobject]@{ Tag = $Tag; Version = $verNoV; Name = $name; Url = $url }
+}
+function Test-BCLInstalled {
+  $defaultDirs = @(
+    (Join-Path $env:LOCALAPPDATA 'Programs\bettercrewlink'),
+    (Join-Path $env:LOCALAPPDATA 'Programs\BetterCrewLink')
+  )
+  foreach ($d in $defaultDirs) {
+    $exe = Join-Path $d 'Better-CrewLink.exe'
+    if (Test-Path $exe) { return $true }
+  }
+  try {
+    $keys = @(
+      'HKCU:\Software\Microsoft\Windows\CurrentVersion\Uninstall\*',
+      'HKLM:\Software\Microsoft\Windows\CurrentVersion\Uninstall\*',
+      'HKLM:\Software\WOW6432Node\Microsoft\Windows\CurrentVersion\Uninstall\*'
+    )
+    $hit = Get-ItemProperty -Path $keys -ErrorAction SilentlyContinue |
+           Where-Object { $_.PSObject.Properties['DisplayName'] -and ($_.DisplayName -match '(?i)\bBetter[- ]?CrewLink\b') } |
+           Select-Object -First 1
+    if ($hit) { return $true }
+  } catch {}
+  try {
+    $pkg = Get-Package -ProviderName Programs -ErrorAction SilentlyContinue |
+           Where-Object { $_.Name -match '(?i)\bBetter[- ]?CrewLink\b' } |
+           Select-Object -First 1
+    if ($pkg) { return $true }
+  } catch {}
+  return $false
+}
+function Get-BCLUninstallEntry {
+  $keys = @(
+    'HKCU:\Software\Microsoft\Windows\CurrentVersion\Uninstall\*',
+    'HKLM:\Software\Microsoft\Windows\CurrentVersion\Uninstall\*',
+    'HKLM:\Software\WOW6432Node\Microsoft\Windows\CurrentVersion\Uninstall\*'
+  )
+  Get-ItemProperty -Path $keys -ErrorAction SilentlyContinue |
+    Where-Object { $_.PSObject.Properties['DisplayName'] -and ($_.DisplayName -match '(?i)\bBetter[- ]?CrewLink\b') } |
+    Select-Object -First 1 DisplayName, UninstallString
+}
+function Get-BCLInstalledVersion {
+  foreach ($root in @(
+    (Join-Path $env:LOCALAPPDATA 'Programs\bettercrewlink'),
+    (Join-Path $env:LOCALAPPDATA 'Programs\BetterCrewLink')
+  )) {
+    $exe = Join-Path $root 'Better-CrewLink.exe'
+    if (Test-Path $exe) {
+      try { return ((Get-Item $exe).VersionInfo.ProductVersion).Trim() } catch {}
+    }
+  }
+  try {
+    $entry = Get-BCLUninstallEntry
+    if ($entry -and $entry.UninstallString) {
+      $path = $entry.UninstallString
+      $exeDir = $null
+      if ($path -match '^\s*"(.*?)"') { $exeDir = Split-Path -Parent $matches[1] } else { $exeDir = Split-Path -Parent ($path.Split(' ',2)[0]) }
+      foreach ($candidate in @($exeDir, (Split-Path -Parent $exeDir))) {
+        if (-not $candidate) { continue }
+        $exe = Join-Path $candidate 'Better-CrewLink.exe'
+        if (Test-Path $exe) {
+          try { return ((Get-Item $exe).VersionInfo.ProductVersion).Trim() } catch {}
+        }
+      }
+    }
+  } catch {}
+  return $null
+}
+function Uninstall-BetterCrewLink {
+  $entry = Get-BCLUninstallEntry
+  if (-not $entry -or -not $entry.UninstallString) {
+    Write-Warn2 "Could not find an uninstall entry for Better-CrewLink."
+    return
+  }
+  Write-Info  "Uninstalling: $($entry.DisplayName)"
+  Write-Info  "Command: $($entry.UninstallString) /S"
+  Write-Log   -Level 'ACTION' -Message ("Executing uninstall: {0} /S" -f $entry.UninstallString)
+
+  $cmdLine = $entry.UninstallString
+  $exePath = $null; $exeArgs = $null
+  if ($cmdLine -match '^\s*"(.*?)"\s*(.*)$') { $exePath = $matches[1]; $exeArgs = $matches[2] }
+  else { $parts = $cmdLine.Split(' ',2); $exePath = $parts[0]; $exeArgs = if ($parts.Count -gt 1) { $parts[1] } else { '' } }
+  $exeArgs = ($exeArgs + ' /S').Trim()
+
+  try {
+    $p = Start-Process -FilePath $exePath -ArgumentList $exeArgs -PassThru -WindowStyle Hidden -ErrorAction Stop
+    $p.WaitForExit()
+    Start-Sleep -Seconds 3
+    Write-Ok "Uninstall finished (code $($p.ExitCode))."
+    Write-Log -Level 'RESULT' -Message ("Uninstall ExitCode: {0}" -f $p.ExitCode)
+
+    if ($p.ExitCode -eq 0) {
+      $bclDir = Join-Path $env:LOCALAPPDATA 'Programs\bettercrewlink'
+      if (Test-Path $bclDir) {
+        $hasFiles = $false
+        try {
+          $f = Get-ChildItem -LiteralPath $bclDir -Recurse -File -Force -ErrorAction SilentlyContinue | Select-Object -First 1
+          $hasFiles = [bool]$f
+        } catch {}
+        if (-not $hasFiles) {
+          try {
+            Get-ChildItem -LiteralPath $bclDir -Recurse -Force -ErrorAction SilentlyContinue | ForEach-Object { try { $_.Attributes = 'Normal' } catch {} }
+            Remove-Item -LiteralPath $bclDir -Recurse -Force -ErrorAction Stop
+            Write-Info "Removed empty folder: $bclDir"
+          } catch {
+            Write-Warn2 "Failed to remove folder ($bclDir): $($_.Exception.Message)"
+          }
+        } else {
+          Write-Warn2 "Better-CrewLink folder contains files; leaving in place: $bclDir"
+        }
+      }
+    }
+  } catch {
+    Write-Warn2 "Silent uninstall failed: $($_.Exception.Message)"
+  }
+}
+function Install-BetterCrewLink {
+  Initialize-Paths
+  Ensure-Tls12
+
+  if (Test-BCLInstalled) {
+    function Read-YNLocal { param([string]$Prompt='Reinstall Better-CrewLink? (Y - for Yes, N - for No and press ENTER):')
+      while ($true) { $in = (Read-Host $Prompt).Trim(); if ($in -match '^(y|Y)$'){ Write-Log -Level 'ACTION' -Message 'BCL reinstall: YES'; return $true}; if($in -match '^(n|N)$'){ Write-Log -Level 'ACTION' -Message 'BCL reinstall: NO'; return $false}; Write-Warn2 "Please type 'y' or 'n'." }
+    }
+    if (-not (Read-YNLocal)) { Write-Info "Skipping Better-CrewLink install."; return }
+    try { Uninstall-BetterCrewLink } catch { Write-Warn2 "Uninstall step failed: $($_.Exception.Message)" }
+  }
+
+  Write-Info 'Resolving latest Better-CrewLink version from GitHub...'
+  $tag   = Get-LatestBetterCrewLinkVersion
+  $info  = Get-BCLDownloadInfo -Tag $tag
+  Write-Ok "Latest Better-CrewLink: $($info.Tag)"
+
+  $dest = Join-Path $script:Paths.Downloads $info.Name
+  Write-Info "Downloading installer: $($info.Name)"
+  Write-Log -Level 'ACTION' -Message ("GET {0}" -f $info.Url)
+  try {
+    $hdrs = @{ 'User-Agent'='AU-Installer' }
+    Invoke-WebRequest -UseBasicParsing -Uri $info.Url -OutFile $dest -Headers $hdrs -ErrorAction Stop
+    Write-Ok "Saved: $dest"
+  } catch {
+    Write-Err2 "Download failed ($($info.Url)): $($_.Exception.Message)"
+    return
+  }
+
+  Write-Info "Launching installer..."
+  Write-Log -Level 'ACTION' -Message ("Start-Process {0}" -f $dest)
+  try {
+    Start-Process -FilePath $dest -ErrorAction Stop | Out-Null
+  } catch {
+    Write-Err2 "Failed to launch installer: $($_.Exception.Message)"; return
+  }
+
+  $totalWait = 20; $step = 4; $elapsed = 0
+  while ($elapsed -lt $totalWait) {
+    Start-Sleep -Seconds $step; $elapsed += $step
+    if (Test-BCLInstalled) { Write-Ok "Better-CrewLink detected as installed."; return }
+  }
+
+  while (-not (Test-BCLInstalled)) {
+    function Read-YNLocal2 { param([string]$Prompt='Still not detected. Return to menu? (Y - for Yes, N - for No and press ENTER):')
+      while ($true) { $in = (Read-Host $Prompt).Trim(); if ($in -match '^(y|Y)$'){ Write-Log -Level 'ACTION' -Message 'Return without BCL detection: YES'; return $true}; if($in -match '^(n|N)$'){ Write-Log -Level 'ACTION' -Message 'Return without BCL detection: NO'; return $false}; Write-Warn2 "Please type 'y' or 'n'." }
+    }
+    if (Read-YNLocal2) { Write-Warn2 "Returning to menu without confirming Better-CrewLink installation."; return }
+    Write-Info "Waiting 30 seconds more..."; Start-Sleep -Seconds 30
+  }
+  Write-Ok "Better-CrewLink detected as installed."
+}
+
+# ======================================================
+# Backup helpers
+# ======================================================
 function Get-DirStat {
   param([Parameter(Mandatory)][string]$Path)
   $files = Get-ChildItem -LiteralPath $Path -Recurse -File -ErrorAction SilentlyContinue
@@ -294,19 +662,6 @@ function Get-DirStat {
     Bytes = ($files | Measure-Object -Property Length -Sum).Sum
   }
 }
-
-function Copy-TreeRobocopy {
-  param([Parameter(Mandatory)][string]$Source,
-        [Parameter(Mandatory)][string]$Destination)
-  New-Item -ItemType Directory -Force -Path $Destination | Out-Null
-  $args = @("$Source","$Destination","/E","/COPY:DAT","/R:2","/W:1","/MT:8","/ETA")
-  & robocopy @args | Out-Host
-  $code = $LASTEXITCODE
-  if ($code -ge 8) { throw "Robocopy failed with code $code" }
-  return $code
-}
-
-
 function Read-BackupMeta {
   param([Parameter(Mandatory)][string]$BackupDir)
   $metaPath = Join-Path $BackupDir '.au_backup_meta.json'
@@ -315,15 +670,8 @@ function Read-BackupMeta {
   }
   return $null
 }
-
 function Save-BackupMeta {
-  param(
-    [Parameter(Mandatory)][string]$BackupDir,
-    [Parameter(Mandatory)][string]$GameDir,
-    [Parameter(Mandatory)]$Stat,
-    [string]$ExeVersion,
-    [string]$ModVersion
-  )
+  param([Parameter(Mandatory)][string]$BackupDir,[Parameter(Mandatory)][string]$GameDir,[Parameter(Mandatory)]$Stat,[string]$ExeVersion,[string]$ModVersion)
   $meta = [pscustomobject]@{
     created    = (Get-Date)
     gameDir    = $GameDir
@@ -332,27 +680,44 @@ function Save-BackupMeta {
     bytes      = [int64]$Stat.Bytes
     modVersion = $ModVersion
   }
-  $meta | ConvertTo-Json -Depth 4 |
-    Set-Content -LiteralPath (Join-Path $BackupDir '.au_backup_meta.json') -Encoding UTF8
+  $meta | ConvertTo-Json -Depth 4 | Set-Content -LiteralPath (Join-Path $BackupDir '.au_backup_meta.json') -Encoding UTF8
 }
-
 function Save-BackupMetaModVersion {
   param([Parameter(Mandatory)][string]$BackupDir,[Parameter(Mandatory)][string]$Version)
   $metaPath = Join-Path $BackupDir '.au_backup_meta.json'
-  $meta = if (Test-Path $metaPath) {
-    Get-Content -Raw -LiteralPath $metaPath | ConvertFrom-Json
-  } else { [pscustomobject]@{} }
+  $meta = if (Test-Path $metaPath) { Get-Content -Raw -LiteralPath $metaPath | ConvertFrom-Json } else { [pscustomobject]@{} }
   $meta.modVersion = $Version
-  $meta | ConvertTo-Json -Depth 4 |
-    Set-Content -LiteralPath $metaPath -Encoding UTF8
+  $meta | ConvertTo-Json -Depth 4 | Set-Content -LiteralPath $metaPath -Encoding UTF8
 }
-
 function Test-BackupIntegrity {
   param([Parameter(Mandatory)][string]$GameDir,[Parameter(Mandatory)][string]$BackupDir)
   $g = Get-DirStat -Path $GameDir
   $b = Get-DirStat -Path $BackupDir
   Write-Info ("Backup integrity - files: {0} vs {1}, bytes: {2:N0} vs {3:N0}" -f $g.Count,$b.Count,$g.Bytes,$b.Bytes)
   return (($g.Count -eq $b.Count) -and ([int64]$g.Bytes -eq [int64]$b.Bytes))
+}
+function Copy-TreeRobocopy {
+  param([Parameter(Mandatory)][string]$Source, [Parameter(Mandatory)][string]$Destination)
+  New-Item -ItemType Directory -Force -Path $Destination | Out-Null
+  $args = @("$Source","$Destination","/E","/COPY:DAT","/R:2","/W:1","/MT:8","/ETA")
+  Write-Log -Level 'ACTION' -Message ("ROBOCOPY {0}" -f ($args -join ' '))
+  Write-RobocopyHeader -Title "ROBOCOPY BACKUP ($Source -> $Destination)"
+  & robocopy @args 2>&1 | Tee-Object -FilePath $script:LogPath -Append | Out-Host
+  Write-RobocopyFooter -Title "ROBOCOPY BACKUP ($Source -> $Destination)"
+  $code = $LASTEXITCODE
+  Write-Log -Level 'RESULT' -Message ("Robocopy ExitCode: {0}" -f $code)
+  if ($code -ge 8) { throw "Robocopy failed with code $code" }
+  return $code
+}
+function Copy-TreeRobocopyQuiet {
+  param([Parameter(Mandatory)][string]$Source,[Parameter(Mandatory)][string]$Destination,[string]$FileMask = '*')
+  New-Item -ItemType Directory -Force -Path $Destination | Out-Null
+  $cmd = "robocopy `"$Source`" `"$Destination`" $FileMask /E /R:2 /W:1 /MT:8"
+  Write-Log -Level 'ACTION' -Message $cmd
+  Write-RobocopyHeader -Title "ROBOCOPY APPLY MOD ($Source -> $Destination)"
+  & robocopy $Source $Destination $FileMask /E /R:2 /W:1 /MT:8 2>&1 | Tee-Object -FilePath $script:LogPath -Append | Out-Host
+  Write-RobocopyFooter -Title "ROBOCOPY APPLY MOD ($Source -> $Destination)"
+  if ($LASTEXITCODE -ge 8) { throw "Robocopy failed (mods) with code $LASTEXITCODE" }
 }
 
 function New-GameBackup {
@@ -406,21 +771,22 @@ function New-GameBackup {
   return $backupDir
 }
 
-
-# -------------------------
-# Mod version & download/install
-# -------------------------
+# ======================================================
+# Mod download/install
+# ======================================================
 function Get-LatestTouMiraVersion {
   Ensure-Tls12
   try {
     $api  = 'https://api.github.com/repos/AU-Avengers/TOU-Mira/releases/latest'
     $hdrs = @{ 'User-Agent'='AU-Installer'; 'Accept'='application/vnd.github+json' }
+    Write-Log -Level 'ACTION' -Message ("GET {0}" -f $api)
     $r = Invoke-WebRequest -UseBasicParsing -Uri $api -Headers $hdrs -ErrorAction Stop
     $j = $r.Content | ConvertFrom-Json
     if ($j.tag_name) { return $j.tag_name }
   } catch {}
   try {
     $url = 'https://github.com/AU-Avengers/TOU-Mira/releases/latest'
+    Write-Log -Level 'ACTION' -Message ("HEAD {0}" -f $url)
     $req = [System.Net.HttpWebRequest]::Create($url)
     $req.Method = 'HEAD'; $req.AllowAutoRedirect = $false; $req.UserAgent = 'AU-Installer'
     $resp = $req.GetResponse(); $loc = $resp.Headers['Location']; $resp.Close()
@@ -428,7 +794,6 @@ function Get-LatestTouMiraVersion {
   } catch {}
   throw "Unable to determine latest TOU-Mira version."
 }
-
 function Expand-Zip {
   param([Parameter(Mandatory)][string]$ZipPath,[Parameter(Mandatory)][string]$Destination)
   New-Item -ItemType Directory -Force -Path $Destination | Out-Null
@@ -439,20 +804,20 @@ function Expand-Zip {
     [IO.Compression.ZipFile]::ExtractToDirectory($ZipPath, $Destination)
   }
 }
-
 function Download-TouMiraAssets {
   param([Parameter(Mandatory)][string]$Version,[Parameter(Mandatory)][string]$StageDir)
   Ensure-Tls12
   New-Item -ItemType Directory -Force -Path $StageDir | Out-Null
   $base  = "https://github.com/AU-Avengers/TOU-Mira/releases/download/$Version"
   $items = @(
-    @{ Name='MiraAPI.dll'; Url="$base/MiraAPI.dll" },
-    @{ Name='TownOfUsMira.dll'; Url="$base/TownOfUsMira.dll" },
+    @{ Name='MiraAPI.dll';                 Url="$base/MiraAPI.dll" },
+    @{ Name='TownOfUsMira.dll';            Url="$base/TownOfUsMira.dll" },
     @{ Name="TouMira-$Version-x86-steam-itch.zip"; Url="$base/TouMira-$Version-x86-steam-itch.zip" }
   )
   foreach ($it in $items) {
     $dest = Join-Path $StageDir $it.Name
-    Write-Info "Downloading: $($it.Url)"
+    Write-Info ("Downloading: {0}" -f $it.Url)
+    Write-Log -Level 'ACTION' -Message ("GET {0}" -f $it.Url)
     Invoke-WebRequest -UseBasicParsing -Uri $it.Url -OutFile $dest
   }
   [pscustomobject]@{
@@ -462,14 +827,6 @@ function Download-TouMiraAssets {
     ZipPath  = Join-Path $StageDir "TouMira-$Version-x86-steam-itch.zip"
   }
 }
-
-function Copy-TreeRobocopyQuiet {
-  param([Parameter(Mandatory)][string]$Source,[Parameter(Mandatory)][string]$Destination,[string]$FileMask = '*')
-  New-Item -ItemType Directory -Force -Path $Destination | Out-Null
-  & robocopy $Source $Destination $FileMask /E /R:2 /W:1 /MT:8
-  if ($LASTEXITCODE -ge 8) { throw "Robocopy failed (mods) with code $LASTEXITCODE" }
-}
-
 function Install-TouMira {
   param([Parameter(Mandatory)][string]$GameDir,[Parameter(Mandatory)][string]$Version)
   $stage  = Join-Path $script:Paths.Temp ("TOU-Mira-$Version")
@@ -500,51 +857,47 @@ function Install-TouMira {
   Copy-Item -LiteralPath $assets.TouMira -Destination (Join-Path $GameDir 'TownOfUsMira.dll') -Force
   Write-Ok 'Mod files applied.'
 
-  # --- offer Better-CrewLink install ---
-  Write-Host ''
-  Write-TypeLines -Lines @(
-  'Would you like to install Better-CrewLink (proximity voice chat) as well?'
-  ) -TotalSeconds 1.4 -Colors @('Magenta')
+  try {
+    $installedBcl = Get-BCLInstalledVersion
+    $latestTag    = $null
+    try { $latestTag = Get-LatestBetterCrewLinkVersion } catch {}
+    $latestBcl    = if ($latestTag) { Normalize-VersionTag $latestTag } else { $null }
 
-  if (Read-YN -Prompt 'Install Better-CrewLink now? (y/n): ') {
-    Write-TypeLines -Lines @('Launching Better-CrewLink installer...') -TotalSeconds 1.4 -Colors @('Green')
-    Install-BetterCrewLink
-  } else {
-   Write-TypeLines -Lines @('Skipping Better-CrewLink.') -TotalSeconds 1.4 -Colors @('Yellow')
-  }
-
-}
-
-# -------------------------
-# Resolve game path (UI + detection)
-# -------------------------
-function Resolve-GameDirInteractive {
-  Show-ProgressDots -Label 'Searching for Game Directory' -Seconds 3
-  $roots = Get-SteamRoot
-  $libs  = Get-SteamLibraries -SteamRoots $roots
-  $auto  = Get-GamePath -CommonRoots $libs
-  if ($auto) {
-    Write-TypeLines -Lines @("Found '$($script:AppName)' Installation: $auto") -Colors @('Green')
-    return (Resolve-Path $auto).Path
-  }
-  Write-TypeLines -Lines @("No '$($script:AppName)' installation detected automatically.") -Colors @('Red')
-  while ($true) {
-    $initial = if ($libs) { $libs | Select-Object -First 1 } else { $env:ProgramFiles }
-    $pick = Select-Folder -Description "Select '$($script:AppName)' game folder (must contain 'Among Us.exe')" -Initial $initial
-    if (-not $pick) {
-      $ans = Read-YQ "No folder selected. Try again? (y/q): "
-      if ($ans -eq 'q') { return $null } else { continue }
+    if ($installedBcl) {
+      if ($latestBcl) {
+        $cmp = Compare-Versions $installedBcl $latestBcl
+        if ($cmp -ge 0) {
+          Write-TypeLines -Lines @("Better-CrewLink is already installed ($installedBcl) and up-to-date. Skipping.") -TotalSeconds 1 -Colors @('Green')
+        } else {
+          Write-TypeLines -Lines @("Better-CrewLink is installed ($installedBcl). A newer version is available ($latestBcl).") -TotalSeconds 1 -Colors @('Yellow')
+          if (Read-YN -Prompt 'Update Better-CrewLink now? (y/n): ') {
+            Write-TypeLines -Lines @('Updating Better-CrewLink...') -TotalSeconds 1 -Colors @('Green')
+            Install-BetterCrewLink
+          } else {
+            Write-TypeLines -Lines @('Skipping Better-CrewLink update.') -TotalSeconds 1 -Colors @('Yellow')
+          }
+        }
+      } else {
+        Write-TypeLines -Lines @("Better-CrewLink detected as installed ($installedBcl).") -TotalSeconds 1 -Colors @('Green')
+      }
+    } else {
+      Write-Host ''
+      Write-TypeLines -Lines @('Would you like to install Better-CrewLink (proximity voice chat) as well?') -TotalSeconds 1 -Colors @('Magenta')
+      if (Read-YN -Prompt 'Install Better-CrewLink now? (y/n): ') {
+        Write-TypeLines -Lines @('Launching Better-CrewLink installer...') -TotalSeconds 1 -Colors @('Green')
+        Install-BetterCrewLink
+      } else {
+        Write-TypeLines -Lines @('Skipping Better-CrewLink.') -TotalSeconds 1 -Colors @('Yellow')
+      }
     }
-    if (Test-Path (Join-Path $pick 'Among Us.exe')) { return (Resolve-Path $pick).Path }
-    Write-Warn2 "Selected folder does NOT contain 'Among Us.exe'."
-    $ans = Read-YQ "Pick another folder? (y/q): "
-    if ($ans -eq 'q') { return $null }
+  } catch {
+    Write-Warn2 "Better-CrewLink check failed: $($_.Exception.Message)"
   }
 }
 
-# -------------------------
-# Workflows
-# -------------------------
+# ======================================================
+# Install / Restore / Update orchestrations
+# ======================================================
 function Install-ToU {
   Initialize-Paths
 
@@ -557,6 +910,7 @@ function Install-ToU {
     "  $gameDir",
     "Executable: $exe"
   ) -Colors @('Green',$null,'Cyan')
+  Write-Log -Level 'STATUS' -Message ("Install target: {0}" -f $gameDir)
 
   Write-Host ''
   Write-TypeLines -Lines @('-' * 47) -Colors @('Red')
@@ -590,7 +944,7 @@ function Install-ToU {
 function Restore-Vanilla {
   param([string]$GameDir)
 
-  function Find-BackupDir {
+  function Find-BackupDirLocal {
     $roots   = Get-SteamRoot
     $commons = Get-SteamLibraries -SteamRoots $roots
     foreach ($c in $commons) {
@@ -608,7 +962,7 @@ function Restore-Vanilla {
     $GameDir = Resolve-GameDirInteractive
     if (-not $GameDir) {
       Write-Warn2 "Could not locate the current '$($script:AppName)' folder. Trying to locate backup instead..."
-      $bckOnly = Find-BackupDir
+      $bckOnly = Find-BackupDirLocal
       if (-not $bckOnly) { Write-Err2 "No backup found. Nothing to restore."; return }
       $parent  = Split-Path -Parent $bckOnly
       $GameDir = Join-Path $parent 'Among Us'
@@ -620,7 +974,7 @@ function Restore-Vanilla {
   $BackupDir = Join-Path $parentDir 'Among Us - Bck'
 
   if (-not (Test-Path $BackupDir)) {
-    $found = Find-BackupDir
+    $found = Find-BackupDirLocal
     if ($found) {
       $BackupDir = $found
       $parentDir = Split-Path -Parent $BackupDir
@@ -634,7 +988,7 @@ function Restore-Vanilla {
   Write-Host "  $GameDir" -ForegroundColor Yellow
   Write-Info "…and renaming backup:"
   Write-Host "  $BackupDir" -ForegroundColor Yellow
-  if ((Read-YQ "Proceed? (y/q): ") -eq 'q') { Write-Host 'Restore aborted.' -ForegroundColor Yellow; return }
+  if ((Read-YQ "Proceed? (y/q) type Y for yes and Q for quit and press ENTER: ") -eq 'q') { Write-Host 'Restore aborted.' -ForegroundColor Yellow; return }
 
   if (Test-Path $GameDir) {
     Write-Info "Removing current game folder..."
@@ -668,7 +1022,6 @@ function Restore-Vanilla {
   $script:GameDir    = $restoredGameDir
   $script:GameDirBck = Join-Path (Split-Path -Parent $restoredGameDir) 'Among Us - Bck'
 
-  # --- Offer Better-CrewLink uninstall after restore ---
   try {
     if (Test-BCLInstalled) {
       Write-TypeLines -Lines @('Better-CrewLink is detected on this system. Do you want to uninstall it?') -Colors @('Magenta')
@@ -704,228 +1057,300 @@ function Update-ModPack {
   Install-ToU
 }
 
-# --- BetterCrewLink (3rd party) ---
+# ======================================================
+# Status, Availability, Repair/Update flows
+# ======================================================
+function Get-MenuAvailability {
+  $gameDir      = Resolve-GameDirSilent
+  $installedMod = Get-InstalledTouMiraVersion -GameDir $gameDir
+  $installedBcl = Get-BCLInstalledVersion
 
-function Get-LatestBetterCrewLinkVersion {
-  Ensure-Tls12
-  try {
-    $api  = 'https://api.github.com/repos/OhMyGuus/BetterCrewLink/releases/latest'
-    $hdrs = @{ 'User-Agent'='AU-Installer'; 'Accept'='application/vnd.github+json' }
-    $r = Invoke-WebRequest -UseBasicParsing -Uri $api -Headers $hdrs -ErrorAction Stop
-    $j = $r.Content | ConvertFrom-Json
-    if ($j.tag_name) { return $j.tag_name }  # e.g. "v3.1.4"
-  } catch {}
-  try {
-    $url = 'https://github.com/OhMyGuus/BetterCrewLink/releases/latest'
-    $req = [System.Net.HttpWebRequest]::Create($url)
-    $req.Method = 'HEAD'
-    $req.AllowAutoRedirect = $false
-    $req.UserAgent = 'AU-Installer'
-    $resp = $req.GetResponse()
-    $loc  = $resp.Headers['Location']
-    $resp.Close()
-    if ($loc -and ($loc -match '/tag/([^/]+)$')) { return $matches[1] } # includes 'v'
-  } catch {}
-  throw "Unable to determine latest BetterCrewLink version."
+  $latestModTag = $null; $latestBclTag = $null
+  try { $latestModTag = Get-LatestTouMiraVersion } catch {}
+  try { $latestBclTag = Get-LatestBetterCrewLinkVersion } catch {}
+
+  $latestMod = if ($latestModTag) { Normalize-VersionTag $latestModTag } else { $null }
+  $latestBcl = if ($latestBclTag) { Normalize-VersionTag $latestBclTag } else { $null }
+
+  $modInstalled   = Test-ModInstalled -GameDir $gameDir
+  $bclInstalled   = Test-BCLInstalled
+  $backupAvailable= Test-BackupAvailable -GameDir $gameDir
+
+  $modNeedsUpdate = $false
+  if ($installedMod -and $latestMod) { if ((Compare-Versions $installedMod $latestMod) -lt 0) { $modNeedsUpdate = $true } }
+  $bclNeedsUpdate = $false
+  if ($installedBcl -and $latestBcl) { if ((Compare-Versions $installedBcl $latestBcl) -lt 0) { $bclNeedsUpdate = $true } }
+  $anyUpdate = ($modNeedsUpdate -or $bclNeedsUpdate)
+
+  [pscustomobject]@{
+    GameDir          = $gameDir
+    ModInstalled     = $modInstalled
+    BclInstalled     = $bclInstalled
+    BackupAvailable  = $backupAvailable
+    AnyUpdate        = $anyUpdate
+    ModNeedsUpdate   = $modNeedsUpdate
+    BclNeedsUpdate   = $bclNeedsUpdate
+    RepairAvailable  = ($backupAvailable -or $bclInstalled)
+    InstalledModVer  = $installedMod
+    InstalledBclVer  = $installedBcl
+    LatestMod        = $latestMod
+    LatestBcl        = $latestBcl
+  }
 }
 
-function Get-BCLDownloadInfo {
-  param([Parameter(Mandatory)][string]$Tag)  # e.g. v3.1.4
-  $verNoV = if ($Tag.StartsWith('v')) { $Tag.Substring(1) } else { $Tag }
-  $name   = "Better-CrewLink-Setup-$verNoV.exe"
-  $url    = "https://github.com/OhMyGuus/BetterCrewLink/releases/download/$Tag/$name"
-  [pscustomobject]@{ Tag = $Tag; Version = $verNoV; Name = $name; Url = $url }
-}
+function Show-StatusPanel {
+  $m = Get-MenuAvailability
 
-function Test-BCLInstalled {
-  # Fast path: default install locations
-  $defaultDirs = @(
-    (Join-Path $env:LOCALAPPDATA 'Programs\bettercrewlink'),
-    (Join-Path $env:LOCALAPPDATA 'Programs\BetterCrewLink')
-  )
-  foreach ($d in $defaultDirs) {
-    $exe = Join-Path $d 'Better-CrewLink.exe'
-    if (Test-Path $exe) { return $true }
+  # Log a concise snapshot up front (easy to find)
+  Write-LogSection -Title "CURRENT STATE SNAPSHOT"
+  Write-Log -Level 'STATUS' -Message ("GameDir: {0}" -f ($m.GameDir ?? '<not found>'))
+  Write-Log -Level 'STATUS' -Message ("ModInstalled: {0}, Version: {1}, Latest: {2}" -f $m.ModInstalled, ($m.InstalledModVer ?? '<n/a>'), ($m.LatestMod ?? '<n/a>'))
+  Write-Log -Level 'STATUS' -Message ("BCL Installed: {0}, Version: {1}, Latest: {2}" -f $m.BclInstalled, ($m.InstalledBclVer ?? '<n/a>'), ($m.LatestBcl ?? '<n/a>'))
+  Write-Log -Level 'STATUS' -Message ("BackupAvailable: {0}" -f $m.BackupAvailable)
+  Write-Log -Level 'STATUS' -Message ("AnyUpdate: {0} (ModNeedsUpdate: {1}, BclNeedsUpdate: {2})" -f $m.AnyUpdate, $m.ModNeedsUpdate, $m.BclNeedsUpdate)
+
+  $modBadge = ''
+  if ($m.InstalledModVer -and $m.LatestMod) {
+    if ((Compare-Versions $m.InstalledModVer $m.LatestMod) -lt 0) { $modBadge = '<--- Update available --->' }
+  }
+  $bclBadge = ''
+  if ($m.InstalledBclVer -and $m.LatestBcl) {
+    if ((Compare-Versions $m.InstalledBclVer $m.LatestBcl) -lt 0) { $bclBadge = '<--- Update available --->' }
   }
 
-  # StrictMode-safe registry check (HKCU first for per-user installs)
-  try {
-    $keys = @(
-      'HKCU:\Software\Microsoft\Windows\CurrentVersion\Uninstall\*',
-      'HKLM:\Software\Microsoft\Windows\CurrentVersion\Uninstall\*',
-      'HKLM:\Software\WOW6432Node\Microsoft\Windows\CurrentVersion\Uninstall\*'
-    )
-    $hit = Get-ItemProperty -Path $keys -ErrorAction SilentlyContinue |
-           Where-Object {
-             $_.PSObject.Properties['DisplayName'] -and
-             ($_.DisplayName -match '(?i)\bBetter[- ]?CrewLink\b')
-           } |
-           Select-Object -First 1
-    if ($hit) { return $true }
-  } catch {}
+  $modText = if ($m.InstalledModVer) { $m.InstalledModVer } else { 'Not installed' }
+  $bclText = if ($m.InstalledBclVer) { $m.InstalledBclVer } else { 'Not installed' }
 
-  # Package provider (limit to Programs to avoid NuGet noise)
-  try {
-    $pkg = Get-Package -ProviderName Programs -ErrorAction SilentlyContinue |
-           Where-Object { $_.Name -match '(?i)\bBetter[- ]?CrewLink\b' } |
-           Select-Object -First 1
-    if ($pkg) { return $true }
-  } catch {}
+  Write-Host -NoNewline 'Among Us Mod: ' -ForegroundColor Cyan
+  if ($modBadge) { Write-Host -NoNewline $modText -ForegroundColor Yellow; Write-Host (' ' + $modBadge) -ForegroundColor Yellow }
+  else { Write-Host $modText -ForegroundColor Yellow }
 
-  return $false
+  Write-Host -NoNewline 'BetterCrewLink: ' -ForegroundColor Cyan
+  if ($bclBadge) { Write-Host -NoNewline $bclText -ForegroundColor Yellow; Write-Host (' ' + $bclBadge) -ForegroundColor Yellow }
+  else { Write-Host $bclText -ForegroundColor Yellow }
 }
 
-function Get-BCLUninstallEntry {
-  # HKCU first (per-user installs), then machine-wide
-  $keys = @(
-    'HKCU:\Software\Microsoft\Windows\CurrentVersion\Uninstall\*',
-    'HKLM:\Software\Microsoft\Windows\CurrentVersion\Uninstall\*',
-    'HKLM:\Software\WOW6432Node\Microsoft\Windows\CurrentVersion\Uninstall\*'
+function Show-Menu {
+  $m = Get-MenuAvailability
+  Write-Host ''
+  Write-Host ''
+  $line1 = if ($m.ModInstalled) { '  1) Install Among Us - ToU Mira (already installed)' } else { '  1) Install Among Us - ToU Mira' }
+  $line2 = if ($m.AnyUpdate) { '  2) Update' } else { '  2) Update (no updates available)' }
+  $line3 = if ($m.BackupAvailable) { '  3) Restore Vanilla' } else { '  3) Restore Vanilla (no backup found)' }
+  $line4 = if ($m.BclInstalled) { '  4) Install BetterCrewLink (already installed)' } else { '  4) Install BetterCrewLink' }
+  $line5 = if ($m.RepairAvailable) { '  5) Repair' } else { '  5) Repair (nothing to repair)' }
+
+  Write-TypeLines -Lines @($line1,$line2,$line3,$line4,$line5,'  Q) Quit') -TotalSeconds 1 -Colors @(
+    $(if ($m.ModInstalled) {'DarkGray'} else {'Green'}),
+    $(if ($m.AnyUpdate) {'Yellow'} else {'DarkGray'}),
+    $(if ($m.BackupAvailable) {'Red'} else {'DarkGray'}),
+    $(if ($m.BclInstalled) {'DarkGray'} else {'Magenta'}),
+    $(if ($m.RepairAvailable) {'Yellow'} else {'DarkGray'}),
+    'DarkGray'
   )
-  Get-ItemProperty -Path $keys -ErrorAction SilentlyContinue |
-    Where-Object {
-      $_.PSObject.Properties['DisplayName'] -and
-      ($_.DisplayName -match '(?i)\bBetter[- ]?CrewLink\b')
-    } |
-    Select-Object -First 1 DisplayName, UninstallString
+  Write-Host ''
+  Write-Host ''
 }
 
-function Uninstall-BetterCrewLink {
-  $entry = Get-BCLUninstallEntry
-  if (-not $entry -or -not $entry.UninstallString) {
-    Write-Warn2 "Could not find an uninstall entry for Better-CrewLink."
+function Repair-Mod {
+  param([string]$GameDir)
+  $backup = Find-BackupDirGlobal
+  if (-not $backup) {
+    Write-Warn2 'No backup found — cannot repair the mod safely.'
+    if (Read-YN -Prompt 'Would you like to perform a fresh install of TOU-Mira instead? (y/n): ') {
+      try { Install-ToU } catch { Write-Err2 "Fresh install failed: $($_.Exception.Message)" }
+    } else {
+      Write-Info 'Okay — when you are ready, choose "Install Among Us - ToU Mira" from the main menu.'
+    }
     return
   }
-  Write-Info  "Uninstalling: $($entry.DisplayName)"
-  Write-Info  "Command: $($entry.UninstallString) /S"
-
-  # Parse executable + args from UninstallString (handles quoted path)
-  $cmdLine = $entry.UninstallString
-  $exePath = $null; $exeArgs = $null
-  if ($cmdLine -match '^\s*"(.*?)"\s*(.*)$') {
-    $exePath = $matches[1]; $exeArgs = $matches[2]
-  } else {
-    $parts = $cmdLine.Split(' ',2)
-    $exePath = $parts[0]; $exeArgs = if ($parts.Count -gt 1) { $parts[1] } else { '' }
-  }
-  $exeArgs = ($exeArgs + ' /S').Trim()
-
   try {
-    $p = Start-Process -FilePath $exePath -ArgumentList $exeArgs -PassThru -WindowStyle Hidden -ErrorAction Stop
-    $p.WaitForExit()
-    Start-Sleep -Seconds 3
-    Write-Ok "Uninstall finished (code $($p.ExitCode))."
-
-    # On successful uninstall, clean up empty folder under %LOCALAPPDATA%\Programs\bettercrewlink
-    if ($p.ExitCode -eq 0) {
-      $bclDir = Join-Path $env:LOCALAPPDATA 'Programs\bettercrewlink'
-      if (Test-Path $bclDir) {
-        # Remove only if there are no files left (subfolders allowed)
-        $hasFiles = $false
-        try {
-          $f = Get-ChildItem -LiteralPath $bclDir -Recurse -File -Force -ErrorAction SilentlyContinue | Select-Object -First 1
-          $hasFiles = [bool]$f
-        } catch {}
-
-        if (-not $hasFiles) {
-          try {
-            # clear readonly attributes and remove
-            Get-ChildItem -LiteralPath $bclDir -Recurse -Force -ErrorAction SilentlyContinue | ForEach-Object {
-              try { $_.Attributes = 'Normal' } catch {}
-            }
-            Remove-Item -LiteralPath $bclDir -Recurse -Force -ErrorAction Stop
-            Write-Info "Removed empty folder: $bclDir"
-          } catch {
-            Write-Warn2 "Failed to remove folder ($bclDir): $($_.Exception.Message)"
-          }
-        } else {
-          Write-Warn2 "Better-CrewLink folder contains files; leaving in place: $bclDir"
-        }
-      }
-    }
+    Write-Info 'Repairing Mod: restoring vanilla from backup...'
+    Restore-Vanilla -GameDir $GameDir
   } catch {
-    Write-Warn2 "Silent uninstall failed: $($_.Exception.Message)"
-  }
-}
-
-function Install-BetterCrewLink {
-  Initialize-Paths
-  Ensure-Tls12
-
-  if (Test-BCLInstalled) {
-    function Read-YNLocal { param([string]$Prompt='Reinstall Better-CrewLink? (Y - for Yes, N - for No and press ENTER):')
-      while ($true) { $in = (Read-Host $Prompt).Trim(); if ($in -match '^(y|Y)$'){return $true}; if($in -match '^(n|N)$'){return $false}; Write-Warn2 "Please type 'y' or 'n'." }
-    }
-    if (-not (Read-YNLocal)) { Write-Info "Skipping Better-CrewLink install."; return }
-    try { Uninstall-BetterCrewLink } catch { Write-Warn2 "Uninstall step failed: $($_.Exception.Message)" }
-  }
-
-  Write-Info 'Resolving latest Better-CrewLink version from GitHub...'
-  $tag   = Get-LatestBetterCrewLinkVersion         # e.g., v3.1.4
-  $info  = Get-BCLDownloadInfo -Tag $tag           # builds proper URL & filename
-  Write-Ok "Latest Better-CrewLink: $($info.Tag)"
-
-  $dest = Join-Path $script:Paths.Downloads $info.Name
-  Write-Info "Downloading installer: $($info.Name)"
-  try {
-    $hdrs = @{ 'User-Agent'='AU-Installer' }
-    Invoke-WebRequest -UseBasicParsing -Uri $info.Url -OutFile $dest -Headers $hdrs -ErrorAction Stop
-    Write-Ok "Saved: $dest"
-  } catch {
-    Write-Err2 "Download failed ($($info.Url)): $($_.Exception.Message)"
+    Write-Err2 "Restore step failed: $($_.Exception.Message)"
     return
   }
-
-  Write-Info "Launching installer..."
   try {
-    Start-Process -FilePath $dest -ErrorAction Stop | Out-Null
+    Write-Info 'Re-applying the latest TOU-Mira...'
+    Install-ToU
   } catch {
-    Write-Err2 "Failed to launch installer: $($_.Exception.Message)"; return
+    Write-Err2 "Re-install step failed: $($_.Exception.Message)"
   }
-
-  # Poll for install completion
-  $totalWait = 20; $step = 4; $elapsed = 0
-  while ($elapsed -lt $totalWait) {
-    Start-Sleep -Seconds $step; $elapsed += $step
-    if (Test-BCLInstalled) { Write-Ok "Better-CrewLink detected as installed."; return }
-  }
-
-  while (-not (Test-BCLInstalled)) {
-    function Read-YNLocal2 { param([string]$Prompt='Still not detected. Return to menu? (Y - for Yes, N - for No and press ENTER):')
-      while ($true) { $in = (Read-Host $Prompt).Trim(); if ($in -match '^(y|Y)$'){return $true}; if($in -match '^(n|N)$'){return $false}; Write-Warn2 "Please type 'y' or 'n'." }
+}
+function Repair-BCL {
+  if (-not (Test-BCLInstalled)) {
+    Write-Warn2 'Better-CrewLink is not installed.'
+    if (Read-YN -Prompt 'Install Better-CrewLink now? (y/n): ') {
+      try { Install-BetterCrewLink } catch { Write-Err2 "BCL install failed: $($_.Exception.Message)" }
     }
-    if (Read-YNLocal2) { Write-Warn2 "Returning to menu without confirming Better-CrewLink installation."; return }
-    Write-Info "Waiting 30 seconds more..."; Start-Sleep -Seconds 30
+    return
   }
-  Write-Ok "Better-CrewLink detected as installed."
+  Write-Info 'Repairing Better-CrewLink: uninstalling...'
+  try { Uninstall-BetterCrewLink } catch { Write-Warn2 "Uninstall step failed: $($_.Exception.Message)" }
+  Write-Info 'Re-installing Better-CrewLink...'
+  try { Install-BetterCrewLink } catch { Write-Err2 "Reinstall step failed: $($_.Exception.Message)" }
+}
+function Repair-All {
+  try { Repair-Mod } catch { Write-Warn2 "Mod repair encountered an issue: $($_.Exception.Message)" }
+  try { Repair-BCL } catch { Write-Warn2 "BCL repair encountered an issue: $($_.Exception.Message)" }
+}
+function Invoke-RepairFlow {
+  $m = Get-MenuAvailability
+  if (-not $m.RepairAvailable) { Write-Ok 'Nothing to repair right now.'; return }
+
+  Write-Host ''
+  Write-TypeLines -Lines @('Repair Menu:','  1) Repair All','  2) Repair Mod (TOU-Mira)','  3) Repair BetterCrewLink','  4) Abort') -TotalSeconds 1 -Colors @('Green','Yellow','Yellow','Yellow','DarkGray')
+  Write-Host ''
+
+  while ($true) {
+    $sel = (Read-Host 'Choose 1/2/3/4').Trim()
+    switch ($sel) {
+      '1' { Repair-All;            return }
+      '2' { Repair-Mod;            return }
+      '3' { Repair-BCL;            return }
+      '4' { Write-Info 'Aborted.'; return }
+      default { Write-Warn2 'Please enter 1, 2, 3 or 4.' }
+    }
+  }
 }
 
-# =========================
-# MAIN (interactive, loops back)
-# =========================
+function Update-ToUMiraSmart {
+  param([string]$GameDir)
+  if (-not $GameDir -or -not (Test-Path $GameDir)) { $GameDir = Resolve-GameDirSilent }
+  if (-not $GameDir) { Write-Warn2 "Could not find game directory; skipping mod update."; return }
+
+  $installed = Get-InstalledTouMiraVersion -GameDir $GameDir
+  $latestTag = $null
+  try { $latestTag = Get-LatestTouMiraVersion } catch { Write-Warn2 "Could not resolve latest TOU-Mira version: $($_.Exception.Message)"; return }
+  $latest    = Normalize-VersionTag $latestTag
+
+  if ($installed -and (Compare-Versions $installed $latest) -ge 0) { Write-Ok "TOU-Mira is already up-to-date ($installed)."; return }
+
+  Write-Info "Updating TOU-Mira (installed: ${installed:-none}, latest: $latest)..."
+  try { Update-ModPack -GameDir $GameDir } catch { Write-Err2 "TOU-Mira update failed: $($_.Exception.Message)" }
+}
+function Update-AllSmart {
+  $gameDir = Resolve-GameDirSilent
+  $installedMod = Get-InstalledTouMiraVersion -GameDir $gameDir
+  $installedBcl = Get-BCLInstalledVersion
+
+  $latestModTag = $null; $latestBclTag = $null
+  try { $latestModTag = Get-LatestTouMiraVersion } catch {}
+  try { $latestBclTag = Get-LatestBetterCrewLinkVersion } catch {}
+
+  $needMod = $false
+  if ($latestModTag) { $latestMod = Normalize-VersionTag $latestModTag; $needMod = -not $installedMod -or ((Compare-Versions $installedMod $latestMod) -lt 0) }
+  $needBcl = $false
+  if ($latestBclTag) { $latestBcl = Normalize-VersionTag $latestBclTag; $needBcl = -not $installedBcl -or ((Compare-Versions $installedBcl $latestBcl) -lt 0) }
+
+  if (-not $needMod -and -not $needBcl) { Write-Ok 'Everything is already up-to-date.'; return }
+
+  if ($needMod) { Update-ToUMiraSmart -GameDir $gameDir }
+  if ($needBcl) { Install-BetterCrewLink }
+}
+function Invoke-UpdateFlow {
+  $gameDir = Resolve-GameDirSilent
+  $installedMod = Get-InstalledTouMiraVersion -GameDir $gameDir
+  $installedBcl = Get-BCLInstalledVersion
+
+  $latestModTag = $null; $latestBclTag = $null
+  try { $latestModTag = Get-LatestTouMiraVersion } catch {}
+  try { $latestBclTag = Get-LatestBetterCrewLinkVersion } catch {}
+
+  $needMod = $false; $needBcl = $false
+  if ($latestModTag) { $latestMod = Normalize-VersionTag $latestModTag; $needMod = -not $installedMod -or ((Compare-Versions $installedMod $latestMod) -lt 0) }
+  if ($latestBclTag) { $latestBcl = Normalize-VersionTag $latestBclTag; $needBcl = -not $installedBcl -or ((Compare-Versions $installedBcl $latestBcl) -lt 0) }
+
+  if ($needMod -xor $needBcl) { Write-Info 'One update available; running Update All...'; Update-AllSmart; return }
+  if (-not $needMod -and -not $needBcl) { Write-Ok 'No updates detected for Mod or Better-CrewLink.'; return }
+
+  Write-Host ''
+  Write-TypeLines -Lines @('Update Menu:','  1) Update All','  2) Update Mod (TOU-Mira)','  3) Update BetterCrewLink','  4) Abort') -TotalSeconds 1 -Colors @('Green','Yellow','Yellow','Yellow','DarkGray')
+  Write-Host ''
+
+  while ($true) {
+    $sel = (Read-Host 'Choose 1/2/3/4').Trim()
+    switch ($sel) {
+      '1' { Update-AllSmart; break }
+      '2' { Update-ToUMiraSmart; break }
+      '3' { Install-BetterCrewLink; break }
+      '4' { Write-Info 'Aborted.'; break }
+      default { Write-Warn2 'Please enter 1, 2, 3 or 4.' }
+    }
+  }
+}
+
+# ======================================================
+# MAIN
+# ======================================================
+Start-InstallerLog
+try {
+  # Initial quick snapshot (before any actions)
+  $state = Get-MenuAvailability
+  Write-LogSection -Title "INITIAL INSTALLED COMPONENTS"
+  Write-Log -Level 'STATUS' -Message ("Among Us Mod: {0}" -f ($(if ($state.InstalledModVer) { $state.InstalledModVer } else { 'Not installed' })))
+  Write-Log -Level 'STATUS' -Message ("BetterCrewLink: {0}" -f ($(if ($state.InstalledBclVer) { $state.InstalledBclVer } else { 'Not installed' })))
+} catch {
+  Write-Log -Level 'ERROR' -Message ("Initial snapshot failed: {0}" -f $_.Exception.Message)
+}
+
 :MainMenu while ($true) {
   try {
+    Clear-Host
     Show-Banner
+    Show-StatusPanel
     Show-Menu
 
-    $choice = Read-Choice -Prompt 'Select option (1/2/3/4 or Q to quit and press ENTER) [1]:' -Default '1'
+    $m = Get-MenuAvailability
+    $allowed = @('1','2','3','4','5','q','Q')
+    $choice  = Read-Choice -Prompt 'Select option (1/2/3/4/5 or Q to quit and press ENTER) [1]:' -Allowed $allowed -Default '1'
+
     switch ($choice) {
-      '1' { try { Install-ToU }            finally { Remove-WorkingFolder }; Write-TypeLines -Lines @('Done. Returning to menu...') -Colors @('Green') }
-      '2' { try { Update-ModPack }         finally { Remove-WorkingFolder }; Write-TypeLines -Lines @('Done. Returning to menu...') -Colors @('Green') }
-      '3' { try { Restore-Vanilla }        finally { Remove-WorkingFolder }; Write-TypeLines -Lines @('Done. Returning to menu...') -Colors @('Green') }
-      '4' { try { Install-BetterCrewLink } finally { Remove-WorkingFolder }; Write-TypeLines -Lines @('Done. Returning to menu...') -Colors @('Green') }
+      '1' {
+        if ($m.ModInstalled) { Write-Warn2 'Mod is already installed.' }
+        else { try { Install-ToU } finally { Remove-WorkingFolder } }
+        Write-TypeLines -Lines @('Done. Returning to menu...') -TotalSeconds 1 -Colors @('Green')
+      }
+      '2' {
+        if (-not $m.AnyUpdate) { Write-Ok 'No updates available.' }
+        else { try { Invoke-UpdateFlow } finally { Remove-WorkingFolder } }
+        Write-TypeLines -Lines @('Done. Returning to menu...') -TotalSeconds 1 -Colors @('Green')
+      }
+      '3' {
+        if (-not $m.BackupAvailable) { Write-Warn2 'No backup found — nothing to restore.' }
+        else { try { Restore-Vanilla } finally { Remove-WorkingFolder } }
+        Write-TypeLines -Lines @('Done. Returning to menu...') -TotalSeconds 1 -Colors @('Green')
+      }
+      '4' {
+        if ($m.BclInstalled) { Write-Warn2 'Better-CrewLink is already installed.' }
+        else { try { Install-BetterCrewLink } finally { Remove-WorkingFolder } }
+        Write-TypeLines -Lines @('Done. Returning to menu...') -TotalSeconds 1 -Colors @('Green')
+      }
+      '5' {
+        if (-not $m.RepairAvailable) { Write-Ok 'Nothing to repair right now.' }
+        else { try { Invoke-RepairFlow } finally { Remove-WorkingFolder } }
+        Write-TypeLines -Lines @('Done. Returning to menu...') -TotalSeconds 1 -Colors @('Green')
+      }
       'q' {
-        Write-TypeLines -Lines @('Goodbye!') -TotalSeconds 1.4 -Colors @('Green')
+        Write-TypeLines -Lines @('Goodbye!') -TotalSeconds 1 -Colors @('Green')
         Remove-WorkingFolder
-        break MainMenu   # exits the while loop
+        break MainMenu
+      }
+      'Q' {
+        Write-TypeLines -Lines @('Goodbye!') -TotalSeconds 1 -Colors @('Green')
+        Remove-WorkingFolder
+        break MainMenu
       }
     }
 
     Start-Sleep -Milliseconds 700
   }
   catch {
-    Write-TypeLines -Lines @("ERROR: $($_.Exception.Message)", 'Returning to menu...') -TotalSeconds 1.4 -Colors @('Red','Yellow')
+    Write-Err2 "ERROR: $($_.Exception.Message)"
+    Write-TypeLines -Lines @('Returning to menu...') -TotalSeconds 1 -Colors @('Yellow')
     Start-Sleep -Milliseconds 900
   }
 }
 
+Write-Log -Level 'INFO' -Message ("===== Session End =====")
