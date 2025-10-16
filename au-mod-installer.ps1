@@ -12,7 +12,7 @@ $script:LogPath      = Join-Path $env:USERPROFILE 'Downloads\au-installer-latest
 $script:Paths        = $null
 $script:GameDir      = $null
 $script:GameDirBck   = $null
-$script:speed        = 0.2
+$script:speed        = 1
 
 $ProgressPreference = 'SilentlyContinue'
 $script:LastLogLine = $null
