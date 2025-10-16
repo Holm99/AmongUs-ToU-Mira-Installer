@@ -1,7 +1,7 @@
 # Requires PowerShell 5.1
 Set-StrictMode -Version 2.0
 $ErrorActionPreference = 'Stop'
-[Console]::OutputEncoding = [Text.UTF8Encoding]::UTF8
+[Console]::OutputEncoding = [System.Text.Encoding]::UTF8
 
 # ======================================================
 # Config
@@ -13,6 +13,9 @@ $script:Paths        = $null
 $script:GameDir      = $null
 $script:GameDirBck   = $null
 
+$ProgressPreference = 'SilentlyContinue'
+$script:LastLogLine = $null
+
 # ======================================================
 # Logging
 # ======================================================
@@ -20,11 +23,20 @@ function New-Ts { Get-Date -Format 'yyyy-MM-dd HH:mm:ss' }
 
 function Start-InstallerLog {
   try {
-    # Overwrite on each run
-    "[{0}] [INFO] ===== Among Us Mod Installer — Session Start =====" -f (New-Ts) | Set-Content -LiteralPath $script:LogPath -Encoding UTF8
-    "[{0}] [INFO] Log file: {1}" -f (New-Ts), $script:LogPath | Add-Content -LiteralPath $script:LogPath
+    $logDir = Split-Path -Parent $script:LogPath
+    if ($logDir -and -not (Test-Path -LiteralPath $logDir)) {
+      New-Item -ItemType Directory -Path $logDir | Out-Null
+    }
 
-    # Environment header
+    "[{0}] [INFO] ===== Among Us Mod Installer — Session Start =====" -f (New-Ts) |
+      Set-Content -LiteralPath $script:LogPath -Encoding UTF8
+    "[{0}] [INFO] Log file: {1}" -f (New-Ts), $script:LogPath |
+      Add-Content -LiteralPath $script:LogPath
+
+    $scriptPath = $MyInvocation.PSCommandPath
+    if (-not $scriptPath) { $scriptPath = $MyInvocation.MyCommand.Path }
+    if (-not $scriptPath) { $scriptPath = '<inline/iex>' }
+
     $envInfo = [pscustomobject]@{
       User              = "$env:USERNAME"
       Machine           = "$env:COMPUTERNAME"
@@ -34,12 +46,12 @@ function Start-InstallerLog {
       UIculture         = (Get-UICulture).Name
       Is64BitProcess    = [Environment]::Is64BitProcess
       Is64BitOS         = [Environment]::Is64BitOperatingSystem
-      ScriptPath        = $MyInvocation.PSCommandPath
+      ScriptPath        = $scriptPath
       WorkingDirectory  = (Get-Location).Path
     }
-    "[{0}] [INFO] --- Environment ---------------------------------" -f (New-Ts) | Add-Content $script:LogPath
-    $envInfo | ConvertTo-Json -Depth 3 | Add-Content -LiteralPath $script:LogPath
-    "[{0}] [INFO] --------------------------------------------------" -f (New-Ts) | Add-Content $script:LogPath
+    "[{0}] [INFO] --- Environment ---------------------------------" -f (New-Ts) | Add-Content -LiteralPath $script:LogPath -Encoding UTF8
+    $envInfo | ConvertTo-Json -Depth 3 | Add-Content -LiteralPath $script:LogPath -Encoding UTF8
+    "[{0}] [INFO] --------------------------------------------------" -f (New-Ts) | Add-Content -LiteralPath $script:LogPath -Encoding UTF8
   } catch {
     Write-Host "Failed to initialize log: $($_.Exception.Message)" -ForegroundColor Red
   }
@@ -47,23 +59,38 @@ function Start-InstallerLog {
 
 function Write-Log {
   param(
-    [Parameter(Mandatory)][ValidateSet('INFO','OK','WARN','ERROR','ACTION','RESULT','STATUS')][string]$Level,
+    [Parameter(Mandatory)]
+    [ValidateSet('INFO','OK','WARN','ERROR','STATUS','STEP','CMD','NET','PATH','ACTION','RESULT','SECTION')]
+    [string]$Level,
     [Parameter(Mandatory)][string]$Message
   )
   try {
-    "[{0}] [{1}] {2}" -f (New-Ts), $Level, $Message | Add-Content -LiteralPath $script:LogPath
+    $ts = (Get-Date).ToString('yyyy-MM-dd HH:mm:ss')
+    $line = "[$ts] [$Level] $Message"
+    if ($script:LastLogLine -eq $line) { return }
+    $script:LastLogLine = $line
+    Add-Content -LiteralPath $script:LogPath -Value $line -Encoding UTF8
   } catch {}
 }
+
+function Write-LogRaw {
+  param(
+    [Parameter(Mandatory)][string[]]$Lines
+  )
+  try {
+    Add-Content -LiteralPath $script:LogPath -Value $Lines -Encoding UTF8
+  } catch {}
+}
+
 
 function Write-LogSection {
   param([Parameter(Mandatory)][string]$Title)
   $bar = ('-' * 66)
-  Add-Content -LiteralPath $script:LogPath -Value $bar
-  Add-Content -LiteralPath $script:LogPath -Value ("[{0}] [SECTION] {1}" -f (New-Ts), $Title)
-  Add-Content -LiteralPath $script:LogPath -Value $bar
+  Add-Content -LiteralPath $script:LogPath -Value $bar -Encoding UTF8
+  Add-Content -LiteralPath $script:LogPath -Value ("[{0}] [SECTION] {1}" -f (New-Ts), $Title) -Encoding UTF8
+  Add-Content -LiteralPath $script:LogPath -Value $bar -Encoding UTF8
 }
 
-# Wrap console writers so they also log
 function Write-TypeLines {
   param(
     [Parameter(Mandatory)][string[]]$Lines,
@@ -77,10 +104,6 @@ function Write-TypeLines {
   for ($li=0; $li -lt $Lines.Count; $li++) {
     $line  = $Lines[$li]
     $color = if ($Colors -and $Colors.Count -gt $li) { $Colors[$li] } else { $null }
-
-    # Log plain line text
-    Write-Log -Level 'INFO' -Message $line
-
     foreach ($ch in $line.ToCharArray()) {
       if ($color) { Write-Host -NoNewline $ch -ForegroundColor $color } else { Write-Host -NoNewline $ch }
       Start-Sleep -Milliseconds $delayMs
@@ -88,30 +111,11 @@ function Write-TypeLines {
     Write-Host ''
   }
 }
-function Write-Info  { param([string]$m) Write-Log -Level 'INFO'  -Message $m; Write-TypeLines -Lines @($m) -TotalSeconds 1 -Colors @('Cyan') }
-function Write-Ok    { param([string]$m) Write-Log -Level 'OK'    -Message $m; Write-TypeLines -Lines @($m) -TotalSeconds 1 -Colors @('Green') }
-function Write-Warn2 { param([string]$m) Write-Log -Level 'WARN'  -Message $m; Write-TypeLines -Lines @($m) -TotalSeconds 1 -Colors @('Yellow') }
-function Write-Err2  { param([string]$m) Write-Log -Level 'ERROR' -Message $m; Write-TypeLines -Lines @($m) -TotalSeconds 1 -Colors @('Red') }
 
-# Robocopy capture helpers
-function Write-RobocopyHeader {
-  param([string]$Title = 'ROBOCOPY OUTPUT')
-  $bar = ('-' * 86)
-  Add-Content -LiteralPath $script:LogPath -Value ""
-  Add-Content -LiteralPath $script:LogPath -Value $bar
-  Add-Content -LiteralPath $script:LogPath -Value ("[{0}] [INFO] <<< {1} START >>>" -f (New-Ts), $Title)
-  Add-Content -LiteralPath $script:LogPath -Value $bar
-  Add-Content -LiteralPath $script:LogPath -Value ""
-}
-function Write-RobocopyFooter {
-  param([string]$Title = 'ROBOCOPY OUTPUT')
-  $bar = ('-' * 86)
-  Add-Content -LiteralPath $script:LogPath -Value ""
-  Add-Content -LiteralPath $script:LogPath -Value $bar
-  Add-Content -LiteralPath $script:LogPath -Value ("[{0}] [INFO] <<< {1} END >>>" -f (New-Ts), $Title)
-  Add-Content -LiteralPath $script:LogPath -Value $bar
-  Add-Content -LiteralPath $script:LogPath -Value ""
-}
+function Write-Info  { param([string]$m) Write-TypeLines -Lines @($m) -TotalSeconds 1 -Colors @('Cyan');    Write-Log -Level 'INFO'  -Message $m }
+function Write-Ok    { param([string]$m) Write-TypeLines -Lines @($m) -TotalSeconds 1 -Colors @('Green');   Write-Log -Level 'OK'    -Message $m }
+function Write-Warn2 { param([string]$m) Write-TypeLines -Lines @($m) -TotalSeconds 1 -Colors @('Yellow');  Write-Log -Level 'WARN'  -Message $m }
+function Write-Err2  { param([string]$m) Write-TypeLines -Lines @($m) -TotalSeconds 1 -Colors @('Red');     Write-Log -Level 'ERROR' -Message $m }
 
 # ======================================================
 # UI
@@ -179,13 +183,14 @@ function Read-YN {
 # ======================================================
 function Ensure-Tls12 {
   try {
+    $cur = [Net.ServicePointManager]::SecurityProtocol
     [Net.ServicePointManager]::SecurityProtocol =
-      [Net.SecurityProtocolType]::Tls12 -bor
-      [Net.SecurityProtocolType]::Tls13
+      $cur -bor [Net.SecurityProtocolType]::Tls12 -bor [Net.SecurityProtocolType]::Tls13
   } catch {
     [Net.ServicePointManager]::SecurityProtocol = [Net.SecurityProtocolType]::Tls12
   }
 }
+
 
 # ======================================================
 # Steam discovery
@@ -247,17 +252,20 @@ function Get-SteamLibraries {
 # ======================================================
 function Initialize-Paths {
   $base = Join-Path $env:USERPROFILE 'Downloads\AmongUsModInstaller'
+
   $paths = [pscustomobject]@{
     Base      = $base
     Tools     = Join-Path $base 'tools'
     Temp      = Join-Path $base 'temp'
     Downloads = Join-Path $base 'downloads'
   }
+
   foreach ($p in $paths.PSObject.Properties.Value) {
-    if (-not (Test-Path $p)) { New-Item -ItemType Directory -Path $p | Out-Null }
+    if (-not (Test-Path -LiteralPath $p)) {
+      New-Item -ItemType Directory -Path $p | Out-Null
+    }
   }
   $script:Paths = $paths
-  Write-Log -Level 'STATUS' -Message ("Working folder: {0}" -f $paths.Base)
 }
 
 function Remove-WorkingFolder {
@@ -346,7 +354,7 @@ if ($dlg.ShowDialog() -eq [System.Windows.Forms.DialogResult]::OK) { [Console]::
 function Normalize-VersionTag { param([Parameter(Mandatory)][string]$Tag) ($Tag -replace '^[vV]', '').Trim() }
 
 function Compare-Versions {
-  param([string]$A,[string]$B) # returns -1,0,1
+  param([string]$A,[string]$B)
   if ([string]::IsNullOrWhiteSpace($A) -and [string]::IsNullOrWhiteSpace($B)) { return 0 }
   if ([string]::IsNullOrWhiteSpace($A)) { return -1 }
   if ([string]::IsNullOrWhiteSpace($B)) { return 1 }
@@ -461,7 +469,7 @@ function Get-LatestBetterCrewLinkVersion {
     Write-Log -Level 'ACTION' -Message ("GET {0}" -f $api)
     $r = Invoke-WebRequest -UseBasicParsing -Uri $api -Headers $hdrs -ErrorAction Stop
     $j = $r.Content | ConvertFrom-Json
-    if ($j.tag_name) { return $j.tag_name }  # e.g. v3.1.4
+    if ($j.tag_name) { return $j.tag_name }
   } catch {}
   try {
     $url = 'https://github.com/OhMyGuus/BetterCrewLink/releases/latest'
@@ -696,28 +704,80 @@ function Test-BackupIntegrity {
   Write-Info ("Backup integrity - files: {0} vs {1}, bytes: {2:N0} vs {3:N0}" -f $g.Count,$b.Count,$g.Bytes,$b.Bytes)
   return (($g.Count -eq $b.Count) -and ([int64]$g.Bytes -eq [int64]$b.Bytes))
 }
+
 function Copy-TreeRobocopy {
-  param([Parameter(Mandatory)][string]$Source, [Parameter(Mandatory)][string]$Destination)
+  param(
+    [Parameter(Mandatory)][string]$Source,
+    [Parameter(Mandatory)][string]$Destination
+  )
+  if (-not $script:Paths) { Initialize-Paths }
+
   New-Item -ItemType Directory -Force -Path $Destination | Out-Null
-  $args = @("$Source","$Destination","/E","/COPY:DAT","/R:2","/W:1","/MT:8","/ETA")
-  Write-Log -Level 'ACTION' -Message ("ROBOCOPY {0}" -f ($args -join ' '))
-  Write-RobocopyHeader -Title "ROBOCOPY BACKUP ($Source -> $Destination)"
-  & robocopy @args 2>&1 | Tee-Object -FilePath $script:LogPath -Append | Out-Host
-  Write-RobocopyFooter -Title "ROBOCOPY BACKUP ($Source -> $Destination)"
+
+  $tempLog = Join-Path $script:Paths.Temp ('robocopy-backup-{0:yyyyMMdd-HHmmss}.log' -f (Get-Date))
+  $args = @("$Source","$Destination","/E","/COPY:DAT","/R:2","/W:1","/MT:8","/ETA","/UNILOG:$tempLog")
+
+  Write-Log -Level 'CMD' -Message ("robocopy {0} {1} /E /COPY:DAT /R:2 /W:1 /MT:8 /ETA /UNILOG:{2}" -f $Source,$Destination,$tempLog)
+  & robocopy @args | Out-Null
   $code = $LASTEXITCODE
-  Write-Log -Level 'RESULT' -Message ("Robocopy ExitCode: {0}" -f $code)
+
+  $tsStart = (Get-Date).ToString('yyyy-MM-dd HH:mm:ss')
+  Write-LogRaw -Lines @('','------------------------------------------------------------',"[$tsStart] [ROBOCOPY] START (backup)")
+
+  try {
+    $lines = Get-Content -LiteralPath $tempLog -Encoding Unicode
+    Write-LogRaw -Lines $lines
+  } catch {
+    Write-Log -Level 'WARN' -Message "Failed reading robocopy temp log: $($_.Exception.Message)"
+  }
+
+  $tsEnd = (Get-Date).ToString('yyyy-MM-dd HH:mm:ss')
+  Write-LogRaw -Lines @("[$tsEnd] [ROBOCOPY] END (backup)",'------------------------------------------------------------','')
+
   if ($code -ge 8) { throw "Robocopy failed with code $code" }
   return $code
 }
+
 function Copy-TreeRobocopyQuiet {
-  param([Parameter(Mandatory)][string]$Source,[Parameter(Mandatory)][string]$Destination,[string]$FileMask = '*')
+  param(
+    [Parameter(Mandatory)][string]$Source,
+    [Parameter(Mandatory)][string]$Destination,
+    [string]$FileMask = '*'
+  )
+  if (-not $script:Paths) { Initialize-Paths }
+
   New-Item -ItemType Directory -Force -Path $Destination | Out-Null
-  $cmd = "robocopy `"$Source`" `"$Destination`" $FileMask /E /R:2 /W:1 /MT:8"
-  Write-Log -Level 'ACTION' -Message $cmd
-  Write-RobocopyHeader -Title "ROBOCOPY APPLY MOD ($Source -> $Destination)"
-  & robocopy $Source $Destination $FileMask /E /R:2 /W:1 /MT:8 2>&1 | Tee-Object -FilePath $script:LogPath -Append | Out-Host
-  Write-RobocopyFooter -Title "ROBOCOPY APPLY MOD ($Source -> $Destination)"
-  if ($LASTEXITCODE -ge 8) { throw "Robocopy failed (mods) with code $LASTEXITCODE" }
+
+  $tempLog = Join-Path $script:Paths.Temp ('robocopy-mods-{0:yyyyMMdd-HHmmss}.log' -f (Get-Date))
+
+  $args = @($Source, $Destination, $FileMask, "/E", "/R:2", "/W:1", "/MT:8", "/UNILOG:$tempLog")
+
+  Write-Log -Level 'CMD' -Message ("robocopy {0} {1} {2} /E /R:2 /W:1 /MT:8 /UNILOG:{3}" -f $Source, $Destination, $FileMask, $tempLog)
+  & robocopy @args | Out-Null
+  $code = $LASTEXITCODE
+
+  $tsStart = (Get-Date).ToString('yyyy-MM-dd HH:mm:ss')
+  Write-LogRaw -Lines @(
+    ''
+    '------------------------------------------------------------'
+    "[$tsStart] [ROBOCOPY] START (mods apply)"
+  )
+
+  try {
+    $lines = Get-Content -LiteralPath $tempLog -Encoding Unicode
+    Write-LogRaw -Lines $lines
+  } catch {
+    Write-Log -Level 'WARN' -Message "Failed reading robocopy temp log: $($_.Exception.Message)"
+  }
+
+  $tsEnd = (Get-Date).ToString('yyyy-MM-dd HH:mm:ss')
+  Write-LogRaw -Lines @(
+    "[$tsEnd] [ROBOCOPY] END (mods apply)"
+    '------------------------------------------------------------'
+    ''
+  )
+
+  if ($code -ge 8) { throw "Robocopy failed (mods) with code $code" }
 }
 
 function New-GameBackup {
@@ -794,32 +854,48 @@ function Get-LatestTouMiraVersion {
   } catch {}
   throw "Unable to determine latest TOU-Mira version."
 }
+
 function Expand-Zip {
   param([Parameter(Mandatory)][string]$ZipPath,[Parameter(Mandatory)][string]$Destination)
-  New-Item -ItemType Directory -Force -Path $Destination | Out-Null
   if (Get-Command Expand-Archive -ErrorAction SilentlyContinue) {
     Expand-Archive -LiteralPath $ZipPath -DestinationPath $Destination -Force
   } else {
     Add-Type -AssemblyName System.IO.Compression.FileSystem
+    if (Test-Path -LiteralPath $Destination) {
+      Get-ChildItem -LiteralPath $Destination -Force -ErrorAction SilentlyContinue |
+        ForEach-Object { try { $_.Attributes = 'Normal' } catch {} }
+      Remove-Item -LiteralPath $Destination -Recurse -Force -ErrorAction SilentlyContinue
+    }
+    New-Item -ItemType Directory -Force -Path $Destination | Out-Null
     [IO.Compression.ZipFile]::ExtractToDirectory($ZipPath, $Destination)
   }
 }
+
 function Download-TouMiraAssets {
   param([Parameter(Mandatory)][string]$Version,[Parameter(Mandatory)][string]$StageDir)
   Ensure-Tls12
   New-Item -ItemType Directory -Force -Path $StageDir | Out-Null
+
   $base  = "https://github.com/AU-Avengers/TOU-Mira/releases/download/$Version"
   $items = @(
-    @{ Name='MiraAPI.dll';                 Url="$base/MiraAPI.dll" },
-    @{ Name='TownOfUsMira.dll';            Url="$base/TownOfUsMira.dll" },
-    @{ Name="TouMira-$Version-x86-steam-itch.zip"; Url="$base/TouMira-$Version-x86-steam-itch.zip" }
+    @{ Name='MiraAPI.dll';                          Url="$base/MiraAPI.dll" },
+    @{ Name='TownOfUsMira.dll';                     Url="$base/TownOfUsMira.dll" },
+    @{ Name="TouMira-$Version-x86-steam-itch.zip";  Url="$base/TouMira-$Version-x86-steam-itch.zip" }
   )
+  $hdrs = @{ 'User-Agent'='AU-Installer'; 'Accept'='application/octet-stream' }
+
   foreach ($it in $items) {
     $dest = Join-Path $StageDir $it.Name
     Write-Info ("Downloading: {0}" -f $it.Url)
     Write-Log -Level 'ACTION' -Message ("GET {0}" -f $it.Url)
-    Invoke-WebRequest -UseBasicParsing -Uri $it.Url -OutFile $dest
+    try {
+      Invoke-WebRequest -UseBasicParsing -Uri $it.Url -OutFile $dest -Headers $hdrs -ErrorAction Stop
+    } catch {
+      Write-Err2 "Download failed ($($it.Url)): $($_.Exception.Message)"
+      throw
+    }
   }
+
   [pscustomobject]@{
     StageDir = $StageDir
     MiraApi  = Join-Path $StageDir 'MiraAPI.dll'
@@ -827,6 +903,7 @@ function Download-TouMiraAssets {
     ZipPath  = Join-Path $StageDir "TouMira-$Version-x86-steam-itch.zip"
   }
 }
+
 function Install-TouMira {
   param([Parameter(Mandatory)][string]$GameDir,[Parameter(Mandatory)][string]$Version)
   $stage  = Join-Path $script:Paths.Temp ("TOU-Mira-$Version")
@@ -1001,10 +1078,6 @@ function Restore-Vanilla {
   }
 
   try {
-    if (Test-Path $GameDir) {
-      $stamp = Get-Date -Format 'yyyyMMdd-HHmmss'
-      Rename-Item -LiteralPath $GameDir -NewName ("Among Us (old $stamp)")
-    }
     Write-Info "Restoring backup to: $GameDir"
     Rename-Item -LiteralPath $BackupDir -NewName 'Among Us' -ErrorAction Stop
   } catch { Write-Err2 "Failed to restore backup: $($_.Exception.Message)"; return }
@@ -1101,9 +1174,9 @@ function Get-MenuAvailability {
 function Coalesce { param($value, $fallback) if ($null -ne $value -and $value -ne '') { $value } else { $fallback } }
 
 function Show-StatusPanel {
-  $m = Get-MenuAvailability
+  param([psobject]$State)
+  $m = if ($PSBoundParameters.ContainsKey('State') -and $State) { $State } else { Get-MenuAvailability }
 
-  # Log a concise snapshot up front (easy to find)
   Write-LogSection -Title "CURRENT STATE SNAPSHOT"
   Write-Log -Level 'STATUS' -Message ("GameDir: {0}" -f (Coalesce $m.GameDir '<not found>'))
   Write-Log -Level 'STATUS' -Message ("ModInstalled: {0}, Version: {1}, Latest: {2}" -f $m.ModInstalled, (Coalesce $m.InstalledModVer '<n/a>'), (Coalesce $m.LatestMod '<n/a>'))
@@ -1133,7 +1206,9 @@ function Show-StatusPanel {
 }
 
 function Show-Menu {
-  $m = Get-MenuAvailability
+  param([psobject]$State)
+  $m = if ($PSBoundParameters.ContainsKey('State') -and $State) { $State } else { Get-MenuAvailability }
+
   Write-Host ''
   Write-Host ''
   $line1 = if ($m.ModInstalled) { '  1) Install Among Us - ToU Mira (already installed)' } else { '  1) Install Among Us - ToU Mira' }
@@ -1229,7 +1304,7 @@ function Update-ToUMiraSmart {
 
   if ($installed -and (Compare-Versions $installed $latest) -ge 0) { Write-Ok "TOU-Mira is already up-to-date ($installed)."; return }
 
-  Write-Info "Updating TOU-Mira (installed: ${installed:-none}, latest: $latest)..."
+  Write-Info ("Updating TOU-Mira (installed: {0}, latest: {1})..." -f ($(if ($installed) { $installed } else { 'none' }), $latest))
   try { Update-ModPack -GameDir $GameDir } catch { Write-Err2 "TOU-Mira update failed: $($_.Exception.Message)" }
 }
 function Update-AllSmart {
@@ -1288,7 +1363,6 @@ function Invoke-UpdateFlow {
 # ======================================================
 Start-InstallerLog
 try {
-  # Initial quick snapshot (before any actions)
   $state = Get-MenuAvailability
   Write-LogSection -Title "INITIAL INSTALLED COMPONENTS"
   Write-Log -Level 'STATUS' -Message ("Among Us Mod: {0}" -f ($(if ($state.InstalledModVer) { $state.InstalledModVer } else { 'Not installed' })))
@@ -1300,11 +1374,11 @@ try {
 :MainMenu while ($true) {
   try {
     Clear-Host
+    $m = Get-MenuAvailability
     Show-Banner
     Show-StatusPanel
     Show-Menu
 
-    $m = Get-MenuAvailability
     $allowed = @('1','2','3','4','5','q','Q')
     $choice  = Read-Choice -Prompt 'Select option (1/2/3/4/5 or Q to quit and press ENTER) [1]:' -Allowed $allowed -Default '1'
 
