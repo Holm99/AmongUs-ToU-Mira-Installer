@@ -108,13 +108,26 @@ function Write-Log {
 
 function Write-LogRaw {
   param(
-    [Parameter(Mandatory)][string[]]$Lines
+    [Parameter(Mandatory)]
+    [AllowEmptyString()]
+    [AllowEmptyCollection()]
+    [object]$Lines
   )
   try {
-    Add-Content -LiteralPath $script:LogPath -Value $Lines -Encoding UTF8
+    if ($null -eq $Lines) { return }
+
+    # Normalize to a string array and drop nulls (keep empty strings = intentional blank lines)
+    $arr = @()
+    if ($Lines -is [System.Collections.IEnumerable] -and -not ($Lines -is [string])) {
+      foreach ($l in $Lines) { if ($null -ne $l) { $arr += [string]$l } }
+    } else {
+      $arr = @([string]$Lines)
+    }
+
+    if ($arr.Count -eq 0) { return }
+    Add-Content -LiteralPath $script:LogPath -Value $arr -Encoding UTF8
   } catch {}
 }
-
 
 function Write-LogSection {
   param([Parameter(Mandatory)][string]$Title)
@@ -748,7 +761,7 @@ function Copy-TreeRobocopy {
   New-Item -ItemType Directory -Force -Path $Destination | Out-Null
 
   $tempLog = Join-Path $script:Paths.Temp ('robocopy-backup-{0:yyyyMMdd-HHmmss}.log' -f (Get-Date))
-  $args = @("$Source","$Destination","/E","/COPY:DAT","/R:2","/W:1","/MT:8","/ETA","/UNILOG:$tempLog")
+  $args    = @("$Source","$Destination","/E","/COPY:DAT","/R:2","/W:1","/MT:8","/ETA","/UNILOG:$tempLog")
 
   Write-Log -Level 'CMD' -Message ("robocopy {0} {1} /E /COPY:DAT /R:2 /W:1 /MT:8 /ETA /UNILOG:{2}" -f $Source,$Destination,$tempLog)
   & robocopy @args | Out-Null
@@ -758,8 +771,18 @@ function Copy-TreeRobocopy {
   Write-LogRaw -Lines @('','------------------------------------------------------------',"[$tsStart] [ROBOCOPY] START (backup)")
 
   try {
-    $lines = Get-Content -LiteralPath $tempLog -Encoding Unicode
-    Write-LogRaw -Lines $lines
+    if ((Test-Path -LiteralPath $tempLog) -and ((Get-Item -LiteralPath $tempLog).Length -gt 0)) {
+      $lines = Get-Content -LiteralPath $tempLog -Encoding Unicode
+      # Normalize and filter truly empty lines so Write-LogRaw never gets a single empty string
+      if ($lines -is [string]) {
+        if ($lines.Length -gt 0) { Write-LogRaw -Lines @($lines) }
+      } elseif ($lines) {
+        $norm = @($lines | Where-Object { $_ -ne $null -and $_ -ne '' })
+        if ($norm.Count -gt 0) { Write-LogRaw -Lines $norm }
+      }
+    } else {
+      Write-Log -Level 'WARN' -Message "Robocopy temp log exists but is empty (or missing): $tempLog"
+    }
   } catch {
     Write-Log -Level 'WARN' -Message "Failed reading robocopy temp log: $($_.Exception.Message)"
   }
@@ -782,8 +805,7 @@ function Copy-TreeRobocopyQuiet {
   New-Item -ItemType Directory -Force -Path $Destination | Out-Null
 
   $tempLog = Join-Path $script:Paths.Temp ('robocopy-mods-{0:yyyyMMdd-HHmmss}.log' -f (Get-Date))
-
-  $args = @($Source, $Destination, $FileMask, "/E", "/R:2", "/W:1", "/MT:8", "/UNILOG:$tempLog")
+  $args    = @($Source, $Destination, $FileMask, "/E", "/R:2", "/W:1", "/MT:8", "/UNILOG:$tempLog")
 
   Write-Log -Level 'CMD' -Message ("robocopy {0} {1} {2} /E /R:2 /W:1 /MT:8 /UNILOG:{3}" -f $Source, $Destination, $FileMask, $tempLog)
   & robocopy @args | Out-Null
@@ -797,8 +819,17 @@ function Copy-TreeRobocopyQuiet {
   )
 
   try {
-    $lines = Get-Content -LiteralPath $tempLog -Encoding Unicode
-    Write-LogRaw -Lines $lines
+    if ((Test-Path -LiteralPath $tempLog) -and ((Get-Item -LiteralPath $tempLog).Length -gt 0)) {
+      $lines = Get-Content -LiteralPath $tempLog -Encoding Unicode
+      if ($lines -is [string]) {
+        if ($lines.Length -gt 0) { Write-LogRaw -Lines @($lines) }
+      } elseif ($lines) {
+        $norm = @($lines | Where-Object { $_ -ne $null -and $_ -ne '' })
+        if ($norm.Count -gt 0) { Write-LogRaw -Lines $norm }
+      }
+    } else {
+      Write-Log -Level 'WARN' -Message "Robocopy temp log exists but is empty (or missing): $tempLog"
+    }
   } catch {
     Write-Log -Level 'WARN' -Message "Failed reading robocopy temp log: $($_.Exception.Message)"
   }
