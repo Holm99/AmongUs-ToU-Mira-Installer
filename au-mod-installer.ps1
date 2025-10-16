@@ -12,6 +12,7 @@ $script:LogPath      = Join-Path $env:USERPROFILE 'Downloads\au-installer-latest
 $script:Paths        = $null
 $script:GameDir      = $null
 $script:GameDirBck   = $null
+$script:speed        = 0.2
 
 $ProgressPreference = 'SilentlyContinue'
 $script:LastLogLine = $null
@@ -158,10 +159,10 @@ function Write-TypeLines {
   }
 }
 
-function Write-Info  { param([string]$m) Write-TypeLines -Lines @($m) -TotalSeconds 1 -Colors @('Cyan');    Write-Log -Level 'INFO'  -Message $m }
-function Write-Ok    { param([string]$m) Write-TypeLines -Lines @($m) -TotalSeconds 1 -Colors @('Green');   Write-Log -Level 'OK'    -Message $m }
-function Write-Warn2 { param([string]$m) Write-TypeLines -Lines @($m) -TotalSeconds 1 -Colors @('Yellow');  Write-Log -Level 'WARN'  -Message $m }
-function Write-Err2  { param([string]$m) Write-TypeLines -Lines @($m) -TotalSeconds 1 -Colors @('Red');     Write-Log -Level 'ERROR' -Message $m }
+function Write-Info  { param([string]$m) Write-TypeLines -Lines @($m) -TotalSeconds $script:speed -Colors @('Cyan');    Write-Log -Level 'INFO'  -Message $m }
+function Write-Ok    { param([string]$m) Write-TypeLines -Lines @($m) -TotalSeconds $script:speed -Colors @('Green');   Write-Log -Level 'OK'    -Message $m }
+function Write-Warn2 { param([string]$m) Write-TypeLines -Lines @($m) -TotalSeconds $script:speed -Colors @('Yellow');  Write-Log -Level 'WARN'  -Message $m }
+function Write-Err2  { param([string]$m) Write-TypeLines -Lines @($m) -TotalSeconds $script:speed -Colors @('Red');     Write-Log -Level 'ERROR' -Message $m }
 
 # ======================================================
 # UI
@@ -1008,27 +1009,27 @@ function Install-TouMira {
       if ($latestBcl) {
         $cmp = Compare-Versions $installedBcl $latestBcl
         if ($cmp -ge 0) {
-          Write-TypeLines -Lines @("Better-CrewLink is already installed ($installedBcl) and up-to-date. Skipping.") -TotalSeconds 1 -Colors @('Green')
+          Write-TypeLines -Lines @("Better-CrewLink is already installed ($installedBcl) and up-to-date. Skipping.") -TotalSeconds $script:speed -Colors @('Green')
         } else {
-          Write-TypeLines -Lines @("Better-CrewLink is installed ($installedBcl). A newer version is available ($latestBcl).") -TotalSeconds 1 -Colors @('Yellow')
+          Write-TypeLines -Lines @("Better-CrewLink is installed ($installedBcl). A newer version is available ($latestBcl).") -TotalSeconds $script:speed -Colors @('Yellow')
           if (Read-YN -Prompt 'Update Better-CrewLink now? (y/n): ') {
-            Write-TypeLines -Lines @('Updating Better-CrewLink...') -TotalSeconds 1 -Colors @('Green')
+            Write-TypeLines -Lines @('Updating Better-CrewLink...') -TotalSeconds $script:speed -Colors @('Green')
             Install-BetterCrewLink
           } else {
-            Write-TypeLines -Lines @('Skipping Better-CrewLink update.') -TotalSeconds 1 -Colors @('Yellow')
+            Write-TypeLines -Lines @('Skipping Better-CrewLink update.') -TotalSeconds $script:speed -Colors @('Yellow')
           }
         }
       } else {
-        Write-TypeLines -Lines @("Better-CrewLink detected as installed ($installedBcl).") -TotalSeconds 1 -Colors @('Green')
+        Write-TypeLines -Lines @("Better-CrewLink detected as installed ($installedBcl).") -TotalSeconds $script:speed -Colors @('Green')
       }
     } else {
       Write-Host ''
-      Write-TypeLines -Lines @('Would you like to install Better-CrewLink (proximity voice chat) as well?') -TotalSeconds 1 -Colors @('Magenta')
+      Write-TypeLines -Lines @('Would you like to install Better-CrewLink (proximity voice chat) as well?') -TotalSeconds $script:speed -Colors @('Magenta')
       if (Read-YN -Prompt 'Install Better-CrewLink now? (y/n): ') {
-        Write-TypeLines -Lines @('Launching Better-CrewLink installer...') -TotalSeconds 1 -Colors @('Green')
+        Write-TypeLines -Lines @('Launching Better-CrewLink installer...') -TotalSeconds $script:speed -Colors @('Green')
         Install-BetterCrewLink
       } else {
-        Write-TypeLines -Lines @('Skipping Better-CrewLink.') -TotalSeconds 1 -Colors @('Yellow')
+        Write-TypeLines -Lines @('Skipping Better-CrewLink.') -TotalSeconds $script:speed -Colors @('Yellow')
       }
     }
   } catch {
@@ -1281,7 +1282,7 @@ function Show-Menu {
   $line4 = if ($m.BclInstalled) { '  4) Install BetterCrewLink (already installed)' } else { '  4) Install BetterCrewLink' }
   $line5 = if ($m.RepairAvailable) { '  5) Repair' } else { '  5) Repair (nothing to repair)' }
 
-  Write-TypeLines -Lines @($line1,$line2,$line3,$line4,$line5,'  Q) Quit') -TotalSeconds 1 -Colors @(
+  Write-TypeLines -Lines @($line1,$line2,$line3,$line4,$line5,'  Q) Quit') -TotalSeconds $script:speed -Colors @(
     $(if ($m.ModInstalled) {'DarkGray'} else {'Green'}),
     $(if ($m.AnyUpdate) {'Yellow'} else {'DarkGray'}),
     $(if ($m.BackupAvailable) {'Red'} else {'DarkGray'}),
@@ -1341,7 +1342,7 @@ function Invoke-RepairFlow {
   if (-not $m.RepairAvailable) { Write-Ok 'Nothing to repair right now.'; return }
 
   Write-Host ''
-  Write-TypeLines -Lines @('Repair Menu:','  1) Repair All','  2) Repair Mod (TOU-Mira)','  3) Repair BetterCrewLink','  4) Abort') -TotalSeconds 1 -Colors @('Green','Yellow','Yellow','Yellow','DarkGray')
+  Write-TypeLines -Lines @('Repair Menu:','  1) Repair All','  2) Repair Mod (TOU-Mira)','  3) Repair BetterCrewLink','  4) Abort') -TotalSeconds $script:speed -Colors @('Green','Yellow','Yellow','Yellow','DarkGray')
   Write-Host ''
 
   while ($true) {
@@ -1407,7 +1408,7 @@ function Invoke-UpdateFlow {
   if (-not $needMod -and -not $needBcl) { Write-Ok 'No updates detected for Mod or Better-CrewLink.'; return }
 
   Write-Host ''
-  Write-TypeLines -Lines @('Update Menu:','  1) Update All','  2) Update Mod (TOU-Mira)','  3) Update BetterCrewLink','  4) Abort') -TotalSeconds 1 -Colors @('Green','Yellow','Yellow','Yellow','DarkGray')
+  Write-TypeLines -Lines @('Update Menu:','  1) Update All','  2) Update Mod (TOU-Mira)','  3) Update BetterCrewLink','  4) Abort') -TotalSeconds $script:speed -Colors @('Green','Yellow','Yellow','Yellow','DarkGray')
   Write-Host ''
 
   while ($true) {
@@ -1450,35 +1451,35 @@ try {
       '1' {
         if ($m.ModInstalled) { Write-Warn2 'Mod is already installed.' }
         else { try { Install-ToU } finally { Remove-WorkingFolder } }
-        Write-TypeLines -Lines @('Done. Returning to menu...') -TotalSeconds 1 -Colors @('Green')
+        Write-TypeLines -Lines @('Done. Returning to menu...') -TotalSeconds $script:speed -Colors @('Green')
       }
       '2' {
         if (-not $m.AnyUpdate) { Write-Ok 'No updates available.' }
         else { try { Invoke-UpdateFlow } finally { Remove-WorkingFolder } }
-        Write-TypeLines -Lines @('Done. Returning to menu...') -TotalSeconds 1 -Colors @('Green')
+        Write-TypeLines -Lines @('Done. Returning to menu...') -TotalSeconds $script:speed -Colors @('Green')
       }
       '3' {
         if (-not $m.BackupAvailable) { Write-Warn2 'No backup found — nothing to restore.' }
         else { try { Restore-Vanilla } finally { Remove-WorkingFolder } }
-        Write-TypeLines -Lines @('Done. Returning to menu...') -TotalSeconds 1 -Colors @('Green')
+        Write-TypeLines -Lines @('Done. Returning to menu...') -TotalSeconds $script:speed -Colors @('Green')
       }
       '4' {
         if ($m.BclInstalled) { Write-Warn2 'Better-CrewLink is already installed.' }
         else { try { Install-BetterCrewLink } finally { Remove-WorkingFolder } }
-        Write-TypeLines -Lines @('Done. Returning to menu...') -TotalSeconds 1 -Colors @('Green')
+        Write-TypeLines -Lines @('Done. Returning to menu...') -TotalSeconds $script:speed -Colors @('Green')
       }
       '5' {
         if (-not $m.RepairAvailable) { Write-Ok 'Nothing to repair right now.' }
         else { try { Invoke-RepairFlow } finally { Remove-WorkingFolder } }
-        Write-TypeLines -Lines @('Done. Returning to menu...') -TotalSeconds 1 -Colors @('Green')
+        Write-TypeLines -Lines @('Done. Returning to menu...') -TotalSeconds $script:speed -Colors @('Green')
       }
       'q' {
-        Write-TypeLines -Lines @('Goodbye!') -TotalSeconds 1 -Colors @('Green')
+        Write-TypeLines -Lines @('Goodbye!') -TotalSeconds $script:speed -Colors @('Green')
         Remove-WorkingFolder
         break MainMenu
       }
       'Q' {
-        Write-TypeLines -Lines @('Goodbye!') -TotalSeconds 1 -Colors @('Green')
+        Write-TypeLines -Lines @('Goodbye!') -TotalSeconds $script:speed -Colors @('Green')
         Remove-WorkingFolder
         break MainMenu
       }
@@ -1488,7 +1489,7 @@ try {
   }
   catch {
     Write-Err2 "ERROR: $($_.Exception.Message)"
-    Write-TypeLines -Lines @('Returning to menu...') -TotalSeconds 1 -Colors @('Yellow')
+    Write-TypeLines -Lines @('Returning to menu...') -TotalSeconds $script:speed -Colors @('Yellow')
     Start-Sleep -Milliseconds 900
   }
 }
