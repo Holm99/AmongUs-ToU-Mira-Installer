@@ -9,6 +9,8 @@ $ErrorActionPreference = 'Stop'
 $script:AppId   = 945360
 $script:AppName = 'Among Us'
 
+# køkk
+
 # -------------------------
 # UI helpers
 # -------------------------
