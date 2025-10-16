@@ -1098,14 +1098,16 @@ function Get-MenuAvailability {
   }
 }
 
+function Coalesce { param($value, $fallback) if ($null -ne $value -and $value -ne '') { $value } else { $fallback } }
+
 function Show-StatusPanel {
   $m = Get-MenuAvailability
 
   # Log a concise snapshot up front (easy to find)
   Write-LogSection -Title "CURRENT STATE SNAPSHOT"
-  Write-Log -Level 'STATUS' -Message ("GameDir: {0}" -f ($m.GameDir ?? '<not found>'))
-  Write-Log -Level 'STATUS' -Message ("ModInstalled: {0}, Version: {1}, Latest: {2}" -f $m.ModInstalled, ($m.InstalledModVer ?? '<n/a>'), ($m.LatestMod ?? '<n/a>'))
-  Write-Log -Level 'STATUS' -Message ("BCL Installed: {0}, Version: {1}, Latest: {2}" -f $m.BclInstalled, ($m.InstalledBclVer ?? '<n/a>'), ($m.LatestBcl ?? '<n/a>'))
+  Write-Log -Level 'STATUS' -Message ("GameDir: {0}" -f (Coalesce $m.GameDir '<not found>'))
+  Write-Log -Level 'STATUS' -Message ("ModInstalled: {0}, Version: {1}, Latest: {2}" -f $m.ModInstalled, (Coalesce $m.InstalledModVer '<n/a>'), (Coalesce $m.LatestMod '<n/a>'))
+  Write-Log -Level 'STATUS' -Message ("BCL Installed: {0}, Version: {1}, Latest: {2}" -f $m.BclInstalled, (Coalesce $m.InstalledBclVer '<n/a>'), (Coalesce $m.LatestBcl '<n/a>'))
   Write-Log -Level 'STATUS' -Message ("BackupAvailable: {0}" -f $m.BackupAvailable)
   Write-Log -Level 'STATUS' -Message ("AnyUpdate: {0} (ModNeedsUpdate: {1}, BclNeedsUpdate: {2})" -f $m.AnyUpdate, $m.ModNeedsUpdate, $m.BclNeedsUpdate)
 
