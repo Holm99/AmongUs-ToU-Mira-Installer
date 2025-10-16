@@ -33,18 +33,32 @@ function Start-InstallerLog {
     "[{0}] [INFO] Log file: {1}" -f (New-Ts), $script:LogPath |
       Add-Content -LiteralPath $script:LogPath -Encoding UTF8
 
-    # Resolve script path (robust for irm/iex)
-    $scriptPath = $MyInvocation.PSCommandPath
-    if (-not $scriptPath) { $scriptPath = $MyInvocation.MyCommand.Path }
+    # ---- Resolve script path robustly (handles file, module, irm|iex) ----
+    $scriptPath = $null
+    try {
+      if ($MyInvocation.PSObject.Properties['PSCommandPath']) {
+        $scriptPath = $MyInvocation.PSCommandPath
+      }
+      if (-not $scriptPath -and $MyInvocation.MyCommand) {
+        $mc = $MyInvocation.MyCommand
+        if ($mc.PSObject.Properties['Path']) {
+          $scriptPath = $mc.Path
+        } elseif ($mc.PSObject.Properties['ScriptBlock'] -and $mc.ScriptBlock) {
+          $scriptPath = $mc.ScriptBlock.File
+        } elseif ($mc.PSObject.Properties['Source']) {
+          $scriptPath = $mc.Source
+        }
+      }
+    } catch { }
     if (-not $scriptPath) { $scriptPath = '<inline/iex>' }
 
-    # Resolve working directory robustly (works even when Get-Location doesn't expose .Path)
+    # ---- Resolve working directory robustly (avoids StrictMode property errors) ----
     $wd = $null
     try {
       $loc = Get-Location
       if ($loc -is [string]) {
         $wd = $loc
-      } elseif ($loc.PSObject.Properties['Path']) {
+      } elseif ($loc -and $loc.PSObject.Properties['Path']) {
         $wd = $loc.Path
       } else {
         $wd = $loc.ToString()
