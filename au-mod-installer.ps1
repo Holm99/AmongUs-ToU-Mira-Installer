@@ -31,11 +31,27 @@ function Start-InstallerLog {
     "[{0}] [INFO] ===== Among Us Mod Installer — Session Start =====" -f (New-Ts) |
       Set-Content -LiteralPath $script:LogPath -Encoding UTF8
     "[{0}] [INFO] Log file: {1}" -f (New-Ts), $script:LogPath |
-      Add-Content -LiteralPath $script:LogPath
+      Add-Content -LiteralPath $script:LogPath -Encoding UTF8
 
+    # Resolve script path (robust for irm/iex)
     $scriptPath = $MyInvocation.PSCommandPath
     if (-not $scriptPath) { $scriptPath = $MyInvocation.MyCommand.Path }
     if (-not $scriptPath) { $scriptPath = '<inline/iex>' }
+
+    # Resolve working directory robustly (works even when Get-Location doesn't expose .Path)
+    $wd = $null
+    try {
+      $loc = Get-Location
+      if ($loc -is [string]) {
+        $wd = $loc
+      } elseif ($loc.PSObject.Properties['Path']) {
+        $wd = $loc.Path
+      } else {
+        $wd = $loc.ToString()
+      }
+    } catch {
+      try { $wd = (Resolve-Path . -ErrorAction Stop).Path } catch { $wd = (Get-Item -LiteralPath .).FullName }
+    }
 
     $envInfo = [pscustomobject]@{
       User              = "$env:USERNAME"
@@ -47,11 +63,14 @@ function Start-InstallerLog {
       Is64BitProcess    = [Environment]::Is64BitProcess
       Is64BitOS         = [Environment]::Is64BitOperatingSystem
       ScriptPath        = $scriptPath
-      WorkingDirectory  = (Get-Location).Path
+      WorkingDirectory  = $wd
     }
-    "[{0}] [INFO] --- Environment ---------------------------------" -f (New-Ts) | Add-Content -LiteralPath $script:LogPath -Encoding UTF8
+
+    "[{0}] [INFO] --- Environment ---------------------------------" -f (New-Ts) |
+      Add-Content -LiteralPath $script:LogPath -Encoding UTF8
     $envInfo | ConvertTo-Json -Depth 3 | Add-Content -LiteralPath $script:LogPath -Encoding UTF8
-    "[{0}] [INFO] --------------------------------------------------" -f (New-Ts) | Add-Content -LiteralPath $script:LogPath -Encoding UTF8
+    "[{0}] [INFO] --------------------------------------------------" -f (New-Ts) |
+      Add-Content -LiteralPath $script:LogPath -Encoding UTF8
   } catch {
     Write-Host "Failed to initialize log: $($_.Exception.Message)" -ForegroundColor Red
   }
