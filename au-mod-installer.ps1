@@ -1373,7 +1373,7 @@ try {
 
 :MainMenu while ($true) {
   try {
-    Clear-Host
+    #Clear-Host
     $m = Get-MenuAvailability
     Show-Banner
     Show-StatusPanel
@@ -1430,3 +1430,4 @@ try {
 }
 
 Write-Log -Level 'INFO' -Message ("===== Session End =====")
+
