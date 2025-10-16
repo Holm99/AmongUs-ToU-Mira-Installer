@@ -1,4 +1,4 @@
-# Among Us — ToU Mira Installer
+# Among Us — ToU Mira Installer (Steam only)
 
 Install, update, or restore **Among Us** with the **Town of Us Mira** mod, plus optional **BetterCrewLink** — all from a simple menu.
 
