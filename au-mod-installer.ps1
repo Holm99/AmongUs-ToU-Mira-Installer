@@ -141,11 +141,11 @@ function Write-LogSection {
 function Write-TypeLines {
   param(
     [Parameter(Mandatory)][string[]]$Lines,
-    [double]$TotalSeconds = $script:speed,   # <- default comes from your global
+    [double]$TotalSeconds = $script:speed,   # default comes from the global knob
     [string[]]$Colors
   )
 
-  # Instant mode: if speed <= 0, just print lines with optional color and return
+  # Instant mode: print whole lines without per-char delay
   if ($TotalSeconds -le 0) {
     for ($li=0; $li -lt $Lines.Count; $li++) {
       $line  = $Lines[$li]
@@ -158,7 +158,6 @@ function Write-TypeLines {
   $totalChars = ($Lines | ForEach-Object { $_.Length } | Measure-Object -Sum).Sum
   if ($totalChars -lt 1) { $totalChars = 1 }
 
-  # Use min/max from a single place if you want; these work nicely
   $minDelayMs = 5
   $maxDelayMs = 30
   $delayMs = [int][Math]::Round(($TotalSeconds * 1000) / $totalChars)
@@ -173,6 +172,12 @@ function Write-TypeLines {
     }
     Write-Host ''
   }
+}
+
+function UiSleep {
+  param([int]$Milliseconds)
+  if ($script:speed -le 0) { return }
+  Start-Sleep -Milliseconds $Milliseconds
 }
 
 function Write-Info  { param([string]$m) Write-TypeLines -Lines @($m) -Colors @('Cyan');    Write-Log -Level 'INFO'  -Message $m }
@@ -201,15 +206,20 @@ function Show-Banner {
 
 function Show-ProgressDots {
   param([string]$Label = 'Working', [int]$Seconds = 3)
-  $tickMs = [int](1000 * [Math]::Max(0.05, $script:speed))
-  if ($script:speed -le 0) { $tickMs = 1 }
+
+  if ($script:speed -le 0) {
+    Write-Host ("{0} ..." -f $Label)
+    return
+  }
+
   $frames = @('....','.........','.............')
+  $tickMs = 150
   $elapsed = 0
   while ($elapsed -lt ($Seconds * 1000)) {
-    $i = [int]([Math]::Floor($elapsed / $tickMs))
-    $dots = if ($i -lt $frames.Count) { $frames[$i] } else { '.' * (4 + 4*$i) }
+    $i = [Math]::Min([int]([Math]::Floor($elapsed / $tickMs)), $frames.Count-1)
+    $dots = $frames[$i]
     Write-Host -NoNewline ("`r{0} {1} " -f $Label, $dots)
-    Start-Sleep -Milliseconds $tickMs
+    UiSleep -Milliseconds $tickMs
     $elapsed += $tickMs
   }
   Write-Host
@@ -645,7 +655,7 @@ function Uninstall-BetterCrewLink {
   try {
     $p = Start-Process -FilePath $exePath -ArgumentList $exeArgs -PassThru -WindowStyle Hidden -ErrorAction Stop
     $p.WaitForExit()
-    Start-Sleep -Seconds 3
+    UiSleep -Milliseconds 3000
     Write-Ok "Uninstall finished (code $($p.ExitCode))."
     Write-Log -Level 'RESULT' -Message ("Uninstall ExitCode: {0}" -f $p.ExitCode)
 
@@ -1506,12 +1516,12 @@ try {
       }
     }
 
-    Start-Sleep -Milliseconds 700
+    UiSleep -Milliseconds 700
   }
   catch {
     Write-Err2 "ERROR: $($_.Exception.Message)"
     Write-TypeLines -Lines @('Returning to menu...') -TotalSeconds $script:speed -Colors @('Yellow')
-    Start-Sleep -Milliseconds 900
+    UiSleep -Milliseconds 900
   }
 }
 
