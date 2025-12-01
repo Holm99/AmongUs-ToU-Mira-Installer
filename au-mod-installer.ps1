@@ -269,7 +269,6 @@ function Ensure-Tls12 {
   }
 }
 
-
 # ======================================================
 # Steam discovery
 # ======================================================
@@ -973,9 +972,12 @@ function Download-TouMiraAssets {
   New-Item -ItemType Directory -Force -Path $StageDir | Out-Null
 
   $base  = "https://github.com/AU-Avengers/TOU-Mira/releases/download/$Version"
+
+  # NOTE: v1.4.0+ releases include MiraAPI/TownOfUsMira inside the zip,
+  # so we only need to fetch the zip asset itself.
   $items = @(
-    @{ Name='MiraAPI.dll';                          Url="$base/MiraAPI.dll" },
-    @{ Name='TownOfUsMira.dll';                     Url="$base/TownOfUsMira.dll" },
+    # @{ Name='MiraAPI.dll';                          Url="$base/MiraAPI.dll" },
+    # @{ Name='TownOfUsMira.dll';                     Url="$base/TownOfUsMira.dll" },
     @{ Name="TouMira-$Version-x86-steam-itch.zip";  Url="$base/TouMira-$Version-x86-steam-itch.zip" }
   )
   $hdrs = @{ 'User-Agent'='AU-Installer'; 'Accept'='application/octet-stream' }
@@ -994,8 +996,8 @@ function Download-TouMiraAssets {
 
   [pscustomobject]@{
     StageDir = $StageDir
-    MiraApi  = Join-Path $StageDir 'MiraAPI.dll'
-    TouMira  = Join-Path $StageDir 'TownOfUsMira.dll'
+    # MiraApi  = Join-Path $StageDir 'MiraAPI.dll'
+    # TouMira  = Join-Path $StageDir 'TownOfUsMira.dll'
     ZipPath  = Join-Path $StageDir "TouMira-$Version-x86-steam-itch.zip"
   }
 }
@@ -1026,8 +1028,12 @@ function Install-TouMira {
 
   Write-Info 'Applying mod files to game directory...'
   Copy-TreeRobocopyQuiet -Source $contentRoot -Destination $GameDir -FileMask '*'
-  Copy-Item -LiteralPath $assets.MiraApi -Destination (Join-Path $GameDir 'MiraAPI.dll') -Force
-  Copy-Item -LiteralPath $assets.TouMira -Destination (Join-Path $GameDir 'TownOfUsMira.dll') -Force
+
+  # With v1.4.0+ the DLLs are provided via the zip content; these explicit
+  # downloads/copies are no longer needed.
+  # Copy-Item -LiteralPath $assets.MiraApi -Destination (Join-Path $GameDir 'MiraAPI.dll') -Force
+  # Copy-Item -LiteralPath $assets.TouMira -Destination (Join-Path $GameDir 'TownOfUsMira.dll') -Force
+
   Write-Ok 'Mod files applied.'
 
   try {
@@ -1526,6 +1532,3 @@ try {
 }
 
 Write-Log -Level 'INFO' -Message ("===== Session End =====")
-
-
-
