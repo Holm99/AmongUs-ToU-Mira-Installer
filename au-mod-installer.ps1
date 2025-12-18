@@ -937,26 +937,71 @@ function Ensure-VTag {
   return ('v' + $Tag.Trim())
 }
 
-function Get-LatestTouMiraVersion {
+function Get-TouMiraRelease {
+  param([Parameter(Mandatory)][string]$Tag)
+
   Ensure-Tls12
+  $tag = Ensure-VTag $Tag
+
+  $hdrs = @{
+    'User-Agent' = 'AU-Installer'
+    'Accept'     = 'application/vnd.github+json'
+  }
+
+  $api = "https://api.github.com/repos/AU-Avengers/TOU-Mira/releases/tags/$tag"
+  Write-Log -Level 'ACTION' -Message ("GET {0}" -f $api)
+
   try {
-    $api  = 'https://api.github.com/repos/AU-Avengers/TOU-Mira/releases/latest'
-    $hdrs = @{ 'User-Agent'='AU-Installer'; 'Accept'='application/vnd.github+json' }
-    Write-Log -Level 'ACTION' -Message ("GET {0}" -f $api)
     $r = Invoke-WebRequest -UseBasicParsing -Uri $api -Headers $hdrs -ErrorAction Stop
-    $j = $r.Content | ConvertFrom-Json
-    if ($j.tag_name) { return (Ensure-VTag $j.tag_name) }
-  } catch {}
-  try {
-    $url = 'https://github.com/AU-Avengers/TOU-Mira/releases/latest'
-    Write-Log -Level 'ACTION' -Message ("HEAD {0}" -f $url)
-    $req = [System.Net.HttpWebRequest]::Create($url)
-    $req.Method = 'HEAD'; $req.AllowAutoRedirect = $false; $req.UserAgent = 'AU-Installer'
-    $resp = $req.GetResponse(); $loc = $resp.Headers['Location']; $resp.Close()
-    if ($loc -and ($loc -match '/tag/([^/]+)$')) { return (Ensure-VTag $matches[1]) }
-  } catch {}
-  throw "Unable to determine latest TOU-Mira version."
+    return ($r.Content | ConvertFrom-Json)
+  } catch {
+    throw "Unable to fetch release metadata for tag '$tag' from GitHub API: $($_.Exception.Message)"
+  }
 }
+
+function Score-TouMiraAssetName {
+  param([Parameter(Mandatory)][string]$Name)
+
+  $n = $Name.ToLowerInvariant()
+  $score = 0
+
+  # Prefer Steam builds
+  if ($n -match '\bsteam\b') { $score += 100 }
+
+  # Among Us is 32-bit (x86) historically; prefer x86 if present
+  if ($n -match '\bx86\b|32') { $score += 60 }
+
+  # Often their builds mention itch too (steam/itch bundle)
+  if ($n -match 'itch') { $score += 15 }
+
+  # Prefer archives
+  if ($n.EndsWith('.zip')) { $score += 20 }
+  elseif ($n.EndsWith('.7z')) { $score += 10 }
+
+  return $score
+}
+
+function Select-TouMiraAsset {
+  param([Parameter(Mandatory)]$Release)
+
+  if (-not $Release.assets) { return $null }
+
+  $assets = @($Release.assets) | Where-Object {
+    $_.name -and ($_.name -match '\.(zip|7z)$')
+  }
+
+  if (-not $assets -or $assets.Count -eq 0) { return $null }
+
+  $ranked = $assets | ForEach-Object {
+    [pscustomobject]@{
+      Asset = $_
+      Score = (Score-TouMiraAssetName -Name $_.name)
+    }
+  } | Sort-Object Score -Descending
+
+  return $ranked[0].Asset
+}
+
 
 function Expand-Zip {
   param([Parameter(Mandatory)][string]$ZipPath,[Parameter(Mandatory)][string]$Destination)
@@ -976,47 +1021,44 @@ function Expand-Zip {
 
 function Download-TouMiraAssets {
   param([Parameter(Mandatory)][string]$Version,[Parameter(Mandatory)][string]$StageDir)
+
   Ensure-Tls12
   New-Item -ItemType Directory -Force -Path $StageDir | Out-Null
 
-  # Always prefer v-tag for URL
-  $tag    = Ensure-VTag $Version
-  $verNoV = Normalize-VersionTag $tag
+  $tag = Ensure-VTag $Version
 
-  # Try common combinations in case upstream changes naming/tag style
-  $candidates = @(
-    @{ Tag=$tag;    Name="TouMira-$tag-x86-steam-itch.zip"    }
-    @{ Tag=$tag;    Name="TouMira-$verNoV-x86-steam-itch.zip" }
-    @{ Tag=$verNoV; Name="TouMira-$tag-x86-steam-itch.zip"    }
-    @{ Tag=$verNoV; Name="TouMira-$verNoV-x86-steam-itch.zip" }
-  ) | Select-Object -Unique Tag, Name
+  $rel = Get-TouMiraRelease -Tag $tag
 
-  $hdrs = @{ 'User-Agent'='AU-Installer'; 'Accept'='application/octet-stream' }
-
-  $zipPath = $null
-  foreach ($c in $candidates) {
-    $url  = "https://github.com/AU-Avengers/TOU-Mira/releases/download/$($c.Tag)/$($c.Name)"
-    $dest = Join-Path $StageDir $c.Name
-
-    Write-Info ("Downloading: {0}" -f $url)
-    Write-Log -Level 'ACTION' -Message ("GET {0}" -f $url)
-
-    try {
-      Invoke-WebRequest -UseBasicParsing -Uri $url -OutFile $dest -Headers $hdrs -ErrorAction Stop
-      $zipPath = $dest
-      break
-    } catch {
-      Write-Log -Level 'WARN' -Message ("Download attempt failed: {0} => {1}" -f $url, $_.Exception.Message)
+  # Log what GitHub says is actually available
+  try {
+    Write-Log -Level 'STATUS' -Message ("TOU-Mira release: {0}" -f $rel.name)
+    foreach ($a in @($rel.assets)) {
+      Write-Log -Level 'STATUS' -Message ("Asset: {0}" -f $a.name)
     }
+  } catch {}
+
+  $asset = Select-TouMiraAsset -Release $rel
+  if (-not $asset) {
+    throw "No .zip/.7z assets found for TOU-Mira tag '$tag'. Check the release page assets."
   }
 
-  if (-not $zipPath) {
-    throw "Unable to download TOU-Mira zip for version '$Version' (tried v/no-v tag and filename variants)."
+  $url  = $asset.browser_download_url
+  $name = $asset.name
+  $dest = Join-Path $StageDir $name
+
+  Write-Info ("Downloading: {0}" -f $url)
+  Write-Log  -Level 'ACTION' -Message ("GET {0}" -f $url)
+
+  $hdrs = @{ 'User-Agent'='AU-Installer'; 'Accept'='application/octet-stream' }
+  try {
+    Invoke-WebRequest -UseBasicParsing -Uri $url -OutFile $dest -Headers $hdrs -ErrorAction Stop
+  } catch {
+    throw "Download failed ($url): $($_.Exception.Message)"
   }
 
   [pscustomobject]@{
     StageDir = $StageDir
-    ZipPath  = $zipPath
+    ZipPath  = $dest
   }
 }
 
