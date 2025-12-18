@@ -930,6 +930,26 @@ function New-GameBackup {
 # Mod download/install
 # ======================================================
 
+function Test-HttpUrlExists {
+  param([Parameter(Mandatory)][string]$Url)
+
+  Ensure-Tls12
+  try {
+    $req = [System.Net.HttpWebRequest]::Create($Url)
+    $req.Method = 'HEAD'
+    $req.AllowAutoRedirect = $false
+    $req.UserAgent = 'AU-Installer'
+    $resp = $req.GetResponse()
+    $code = [int]$resp.StatusCode
+    $resp.Close()
+
+    # GitHub release assets often respond with 302 redirect to S3/CDN.
+    return ($code -ge 200 -and $code -lt 400)
+  } catch {
+    return $false
+  }
+}
+
 function Ensure-VTag {
   param([string]$Tag)
   if ([string]::IsNullOrWhiteSpace($Tag)) { return $Tag }
@@ -1020,41 +1040,49 @@ function Expand-Zip {
 }
 
 function Download-TouMiraAssets {
-  param([Parameter(Mandatory)][string]$Version,[Parameter(Mandatory)][string]$StageDir)
+  param(
+    [Parameter(Mandatory)][string]$Version,
+    [Parameter(Mandatory)][string]$StageDir
+  )
 
   Ensure-Tls12
   New-Item -ItemType Directory -Force -Path $StageDir | Out-Null
 
-  $tag = Ensure-VTag $Version
+  # Tag is WITHOUT 'v' (e.g. "1.4.1"), filename uses WITH 'v' (e.g. "v1.4.1")
+  $verNoV  = Normalize-VersionTag $Version
+  $tagNoV  = $verNoV
+  $fileVer = "v$verNoV"
 
-  $rel = Get-TouMiraRelease -Tag $tag
+  $base = "https://github.com/AU-Avengers/TOU-Mira/releases/download/$tagNoV"
 
-  # Log what GitHub says is actually available
-  try {
-    Write-Log -Level 'STATUS' -Message ("TOU-Mira release: {0}" -f $rel.name)
-    foreach ($a in @($rel.assets)) {
-      Write-Log -Level 'STATUS' -Message ("Asset: {0}" -f $a.name)
+  # Primary (matches your link) + a couple reasonable fallbacks
+  $candidateNames = @(
+    "TouMira-$fileVer-x86-steam-itch.zip",
+    "TouMira-$fileVer-x86-steam.zip",
+    "TouMira-$fileVer-x86.zip",
+    "TouMira-$fileVer.zip"
+  )
+
+  $picked = $null
+  foreach ($name in $candidateNames) {
+    $url = "$base/$name"
+    Write-Log -Level 'ACTION' -Message ("HEAD {0}" -f $url)
+    if (Test-HttpUrlExists -Url $url) {
+      $picked = [pscustomobject]@{ Name = $name; Url = $url }
+      break
     }
-  } catch {}
-
-  $asset = Select-TouMiraAsset -Release $rel
-  if (-not $asset) {
-    throw "No .zip/.7z assets found for TOU-Mira tag '$tag'. Check the release page assets."
   }
 
-  $url  = $asset.browser_download_url
-  $name = $asset.name
-  $dest = Join-Path $StageDir $name
+  if (-not $picked) {
+    throw "Unable to download TOU-Mira zip for version '$Version' (tag='$tagNoV', expected filename uses '$fileVer'). Tried: $($candidateNames -join ', ')"
+  }
 
-  Write-Info ("Downloading: {0}" -f $url)
-  Write-Log  -Level 'ACTION' -Message ("GET {0}" -f $url)
+  $dest = Join-Path $StageDir $picked.Name
+  Write-Info ("Downloading: {0}" -f $picked.Url)
+  Write-Log  -Level 'ACTION' -Message ("GET {0}" -f $picked.Url)
 
   $hdrs = @{ 'User-Agent'='AU-Installer'; 'Accept'='application/octet-stream' }
-  try {
-    Invoke-WebRequest -UseBasicParsing -Uri $url -OutFile $dest -Headers $hdrs -ErrorAction Stop
-  } catch {
-    throw "Download failed ($url): $($_.Exception.Message)"
-  }
+  Invoke-WebRequest -UseBasicParsing -Uri $picked.Url -OutFile $dest -Headers $hdrs -ErrorAction Stop
 
   [pscustomobject]@{
     StageDir = $StageDir
