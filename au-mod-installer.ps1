@@ -929,6 +929,14 @@ function New-GameBackup {
 # ======================================================
 # Mod download/install
 # ======================================================
+
+function Ensure-VTag {
+  param([string]$Tag)
+  if ([string]::IsNullOrWhiteSpace($Tag)) { return $Tag }
+  if ($Tag -match '^[vV]') { return $Tag.Trim() }
+  return ('v' + $Tag.Trim())
+}
+
 function Get-LatestTouMiraVersion {
   Ensure-Tls12
   try {
@@ -937,7 +945,7 @@ function Get-LatestTouMiraVersion {
     Write-Log -Level 'ACTION' -Message ("GET {0}" -f $api)
     $r = Invoke-WebRequest -UseBasicParsing -Uri $api -Headers $hdrs -ErrorAction Stop
     $j = $r.Content | ConvertFrom-Json
-    if ($j.tag_name) { return $j.tag_name }
+    if ($j.tag_name) { return (Ensure-VTag $j.tag_name) }
   } catch {}
   try {
     $url = 'https://github.com/AU-Avengers/TOU-Mira/releases/latest'
@@ -945,7 +953,7 @@ function Get-LatestTouMiraVersion {
     $req = [System.Net.HttpWebRequest]::Create($url)
     $req.Method = 'HEAD'; $req.AllowAutoRedirect = $false; $req.UserAgent = 'AU-Installer'
     $resp = $req.GetResponse(); $loc = $resp.Headers['Location']; $resp.Close()
-    if ($loc -and ($loc -match '/tag/([^/]+)$')) { return $matches[1] }
+    if ($loc -and ($loc -match '/tag/([^/]+)$')) { return (Ensure-VTag $matches[1]) }
   } catch {}
   throw "Unable to determine latest TOU-Mira version."
 }
@@ -967,71 +975,50 @@ function Expand-Zip {
 }
 
 function Download-TouMiraAssets {
-  param(
-    [Parameter(Mandatory)][string]$Version,
-    [Parameter(Mandatory)][string]$StageDir
-  )
-
+  param([Parameter(Mandatory)][string]$Version,[Parameter(Mandatory)][string]$StageDir)
   Ensure-Tls12
   New-Item -ItemType Directory -Force -Path $StageDir | Out-Null
 
-  $verNoV = Normalize-VersionTag $Version
+  # Always prefer v-tag for URL
+  $tag    = Ensure-VTag $Version
+  $verNoV = Normalize-VersionTag $tag
 
-  # Try both tag styles, because GitHub release tags can be either "v1.4.1" or "1.4.1"
-  $tagCandidates = @(
-    $Version,
-    "v$verNoV",
-    $verNoV
-  ) | Where-Object { $_ -and $_.Trim() } | Select-Object -Unique
-
-  # Try common asset naming variants
-  $nameCandidates = @(
-    "TouMira-v$verNoV-x86-steam-itch.zip",
-    "TouMira-$verNoV-x86-steam-itch.zip",
-    "TouMira-$Version-x86-steam-itch.zip",
-    "TouMira-v$Version-x86-steam-itch.zip"
-  ) | Where-Object { $_ -and $_.Trim() } | Select-Object -Unique
+  # Try common combinations in case upstream changes naming/tag style
+  $candidates = @(
+    @{ Tag=$tag;    Name="TouMira-$tag-x86-steam-itch.zip"    }
+    @{ Tag=$tag;    Name="TouMira-$verNoV-x86-steam-itch.zip" }
+    @{ Tag=$verNoV; Name="TouMira-$tag-x86-steam-itch.zip"    }
+    @{ Tag=$verNoV; Name="TouMira-$verNoV-x86-steam-itch.zip" }
+  ) | Select-Object -Unique Tag, Name
 
   $hdrs = @{ 'User-Agent'='AU-Installer'; 'Accept'='application/octet-stream' }
 
-  $lastErr = $null
+  $zipPath = $null
+  foreach ($c in $candidates) {
+    $url  = "https://github.com/AU-Avengers/TOU-Mira/releases/download/$($c.Tag)/$($c.Name)"
+    $dest = Join-Path $StageDir $c.Name
 
-  foreach ($tag in $tagCandidates) {
-    $base = "https://github.com/AU-Avengers/TOU-Mira/releases/download/$tag"
+    Write-Info ("Downloading: {0}" -f $url)
+    Write-Log -Level 'ACTION' -Message ("GET {0}" -f $url)
 
-    foreach ($name in $nameCandidates) {
-      $url  = "$base/$name"
-      $dest = Join-Path $StageDir $name
-
-      Write-Info ("Downloading: {0}" -f $url)
-      Write-Log  -Level 'ACTION' -Message ("GET {0}" -f $url)
-
-      try {
-        Invoke-WebRequest -UseBasicParsing -Uri $url -OutFile $dest -Headers $hdrs -ErrorAction Stop
-
-        # Success
-        return [pscustomobject]@{
-          StageDir = $StageDir
-          ZipPath  = $dest
-        }
-      } catch {
-        $lastErr = $_
-        $msg = $_.Exception.Message
-
-        # If it's a 404, try next candidate
-        if ($msg -match '\(404\)\s*Not Found') { continue }
-
-        # Otherwise fail fast (rate limit, TLS, proxy, etc.)
-        Write-Err2 "Download failed ($url): $msg"
-        throw
-      }
+    try {
+      Invoke-WebRequest -UseBasicParsing -Uri $url -OutFile $dest -Headers $hdrs -ErrorAction Stop
+      $zipPath = $dest
+      break
+    } catch {
+      Write-Log -Level 'WARN' -Message ("Download attempt failed: {0} => {1}" -f $url, $_.Exception.Message)
     }
   }
 
-  $detail = if ($lastErr) { $lastErr.Exception.Message } else { "Unknown error." }
-  throw "Could not find a matching TouMira zip asset for tag '$Version'. Last error: $detail"
-}
+  if (-not $zipPath) {
+    throw "Unable to download TOU-Mira zip for version '$Version' (tried v/no-v tag and filename variants)."
+  }
 
+  [pscustomobject]@{
+    StageDir = $StageDir
+    ZipPath  = $zipPath
+  }
+}
 
 function Install-TouMira {
   param([Parameter(Mandatory)][string]$GameDir,[Parameter(Mandatory)][string]$Version)
@@ -1563,5 +1550,3 @@ try {
 }
 
 Write-Log -Level 'INFO' -Message ("===== Session End =====")
-
-
