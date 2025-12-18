@@ -961,22 +961,30 @@ function Get-TouMiraRelease {
   param([Parameter(Mandatory)][string]$Tag)
 
   Ensure-Tls12
-  $tag = Ensure-VTag $Tag
 
   $hdrs = @{
     'User-Agent' = 'AU-Installer'
     'Accept'     = 'application/vnd.github+json'
   }
 
-  $api = "https://api.github.com/repos/AU-Avengers/TOU-Mira/releases/tags/$tag"
-  Write-Log -Level 'ACTION' -Message ("GET {0}" -f $api)
+  $raw = $Tag.Trim()
+  $noV = Normalize-VersionTag $raw
 
-  try {
-    $r = Invoke-WebRequest -UseBasicParsing -Uri $api -Headers $hdrs -ErrorAction Stop
-    return ($r.Content | ConvertFrom-Json)
-  } catch {
-    throw "Unable to fetch release metadata for tag '$tag' from GitHub API: $($_.Exception.Message)"
+  # Try: exact input, no-v, v+noV (some repos use v-tags, this one uses no-v tags)
+  $candidates = @($raw, $noV, ("v$noV")) | Select-Object -Unique
+
+  foreach ($t in $candidates) {
+    $api = "https://api.github.com/repos/AU-Avengers/TOU-Mira/releases/tags/$t"
+    Write-Log -Level 'ACTION' -Message ("GET {0}" -f $api)
+    try {
+      $r = Invoke-WebRequest -UseBasicParsing -Uri $api -Headers $hdrs -ErrorAction Stop
+      return ($r.Content | ConvertFrom-Json)
+    } catch {
+      # try next candidate
+    }
   }
+
+  throw "Unable to fetch release metadata for tag '$Tag' (tried: $($candidates -join ', '))."
 }
 
 function Score-TouMiraAssetName {
@@ -1038,6 +1046,61 @@ function Expand-Zip {
     [IO.Compression.ZipFile]::ExtractToDirectory($ZipPath, $Destination)
   }
 }
+
+function Get-LatestTouMiraVersion {
+  Ensure-Tls12
+
+  # Simple in-session cache to avoid hammering GitHub every menu refresh
+  if ($script:__TouMiraLatestCache -and $script:__TouMiraLatestCache.Time -gt (Get-Date).AddMinutes(-10)) {
+    return $script:__TouMiraLatestCache.Value
+  }
+
+  $hdrs = @{ 'User-Agent'='AU-Installer'; 'Accept'='application/vnd.github+json' }
+
+  # 1) Try GitHub API
+  try {
+    $api = 'https://api.github.com/repos/AU-Avengers/TOU-Mira/releases/latest'
+    Write-Log -Level 'ACTION' -Message ("GET {0}" -f $api)
+    $r = Invoke-WebRequest -UseBasicParsing -Uri $api -Headers $hdrs -ErrorAction Stop
+    $j = $r.Content | ConvertFrom-Json
+
+    $tag = $null
+    if ($j.tag_name) { $tag = [string]$j.tag_name }
+    elseif ($j.name) { $tag = [string]$j.name }
+
+    if ($tag) {
+      # Normalize => return "1.4.1" even if API ever returns "v1.4.1"
+      $val = Normalize-VersionTag $tag
+      $script:__TouMiraLatestCache = @{ Time = Get-Date; Value = $val }
+      return $val
+    }
+  } catch {
+    # fall through to HTML/redirect method
+  }
+
+  # 2) Fallback: follow releases/latest redirect and parse /tag/<tag>
+  try {
+    $url = 'https://github.com/AU-Avengers/TOU-Mira/releases/latest'
+    Write-Log -Level 'ACTION' -Message ("HEAD {0}" -f $url)
+
+    $req = [System.Net.HttpWebRequest]::Create($url)
+    $req.Method = 'HEAD'
+    $req.AllowAutoRedirect = $false
+    $req.UserAgent = 'AU-Installer'
+    $resp = $req.GetResponse()
+    $loc  = $resp.Headers['Location']
+    $resp.Close()
+
+    if ($loc -and ($loc -match '/tag/([^/]+)$')) {
+      $val = Normalize-VersionTag $matches[1]
+      $script:__TouMiraLatestCache = @{ Time = Get-Date; Value = $val }
+      return $val
+    }
+  } catch {}
+
+  throw "Unable to determine latest TOU-Mira version."
+}
+
 
 function Download-TouMiraAssets {
   param(
@@ -1620,3 +1683,4 @@ try {
 }
 
 Write-Log -Level 'INFO' -Message ("===== Session End =====")
+
