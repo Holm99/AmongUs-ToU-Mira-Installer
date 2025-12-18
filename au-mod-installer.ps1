@@ -971,28 +971,53 @@ function Download-TouMiraAssets {
   Ensure-Tls12
   New-Item -ItemType Directory -Force -Path $StageDir | Out-Null
 
-  $base  = "https://github.com/AU-Avengers/TOU-Mira/releases/download/$Version"
+  # GitHub "download/<tag>/" must use the exact tag name (Version may be "1.4.1" or "v1.4.1")
+  $base   = "https://github.com/AU-Avengers/TOU-Mira/releases/download/$Version"
+  $verNoV = Normalize-VersionTag $Version
 
-  # NOTE: v1.4.0+ releases include MiraAPI/TownOfUsMira inside the zip,
-  # so we only need to fetch the zip asset itself.
-  $items = @(
-    # @{ Name='MiraAPI.dll';                          Url="$base/MiraAPI.dll" },
-    # @{ Name='TownOfUsMira.dll';                     Url="$base/TownOfUsMira.dll" },
-    @{ Name="TouMira-$Version-x86-steam-itch.zip";  Url="$base/TouMira-$Version-x86-steam-itch.zip" }
-  )
+  # Try common asset naming variants (TOU-Mira has used both)
+  $candidates = @(
+    "TouMira-v$verNoV-x86-steam-itch.zip",
+    "TouMira-$verNoV-x86-steam-itch.zip",
+    "TouMira-$Version-x86-steam-itch.zip",
+    "TouMira-v$Version-x86-steam-itch.zip"
+  ) | Select-Object -Unique
+
   $hdrs = @{ 'User-Agent'='AU-Installer'; 'Accept'='application/octet-stream' }
 
-  foreach ($it in $items) {
-    $dest = Join-Path $StageDir $it.Name
-    Write-Info ("Downloading: {0}" -f $it.Url)
-    Write-Log -Level 'ACTION' -Message ("GET {0}" -f $it.Url)
+  $lastErr = $null
+  foreach ($name in $candidates) {
+    $url  = "$base/$name"
+    $dest = Join-Path $StageDir $name
+
+    Write-Info ("Downloading: {0}" -f $url)
+    Write-Log  -Level 'ACTION' -Message ("GET {0}" -f $url)
+
     try {
-      Invoke-WebRequest -UseBasicParsing -Uri $it.Url -OutFile $dest -Headers $hdrs -ErrorAction Stop
+      Invoke-WebRequest -UseBasicParsing -Uri $url -OutFile $dest -Headers $hdrs -ErrorAction Stop
+
+      # success
+      return [pscustomobject]@{
+        StageDir = $StageDir
+        ZipPath  = $dest
+      }
     } catch {
-      Write-Err2 "Download failed ($($it.Url)): $($_.Exception.Message)"
+      $lastErr = $_
+
+      # If it's a 404, try the next candidate; otherwise fail fast
+      $msg = $_.Exception.Message
+      if ($msg -match '\(404\)\s*Not Found') { continue }
+
+      Write-Err2 "Download failed ($url): $msg"
       throw
     }
   }
+
+  # If we got here, all candidates 404'd (or similar)
+  $detail = if ($lastErr) { $lastErr.Exception.Message } else { "Unknown error." }
+  throw "Could not find a matching TouMira zip asset for tag '$Version'. Last error: $detail"
+}
+
 
   [pscustomobject]@{
     StageDir = $StageDir
@@ -1532,3 +1557,4 @@ try {
 }
 
 Write-Log -Level 'INFO' -Message ("===== Session End =====")
+
