@@ -1,4 +1,4 @@
-# Requires PowerShell 5.1
+﻿# Requires PowerShell 5.1
 Set-StrictMode -Version 2.0
 $ErrorActionPreference = 'Stop'
 [Console]::OutputEncoding = [System.Text.Encoding]::UTF8
@@ -6,16 +6,18 @@ $ErrorActionPreference = 'Stop'
 # ======================================================
 # Config
 # ======================================================
-$script:AppId        = 945360
 $script:AppName      = 'Among Us'
 $script:LogPath      = Join-Path $env:USERPROFILE 'Downloads\au-installer-latest.log'
 $script:Paths        = $null
 $script:GameDir      = $null
-$script:GameDirBck   = $null
 $script:speed        = 1
+$script:InstallerVersion = '2.0.0'
+$script:__bannerShown = $false
 
 $ProgressPreference = 'SilentlyContinue'
 $script:LastLogLine = $null
+$script:__TouMiraLatestCache = $null
+$script:__BclLatestCache = $null
 
 # ======================================================
 # Logging
@@ -29,7 +31,7 @@ function Start-InstallerLog {
       New-Item -ItemType Directory -Path $logDir | Out-Null
     }
 
-    "[{0}] [INFO] ===== Among Us Mod Installer — Session Start =====" -f (New-Ts) |
+    "[{0}] [INFO] ===== Among Us Mod Installer -- Session Start =====" -f (New-Ts) |
       Set-Content -LiteralPath $script:LogPath -Encoding UTF8
     "[{0}] [INFO] Log file: {1}" -f (New-Ts), $script:LogPath |
       Add-Content -LiteralPath $script:LogPath -Encoding UTF8
@@ -185,11 +187,22 @@ function Write-Ok    { param([string]$m) Write-TypeLines -Lines @($m) -Colors @(
 function Write-Warn2 { param([string]$m) Write-TypeLines -Lines @($m) -Colors @('Yellow');  Write-Log -Level 'WARN'  -Message $m }
 function Write-Err2  { param([string]$m) Write-TypeLines -Lines @($m) -Colors @('Red');     Write-Log -Level 'ERROR' -Message $m }
 
+function Write-Step {
+  param([int]$Current, [int]$Total, [string]$Label, [switch]$Done)
+  if ($Done) {
+    Write-Host ' done' -ForegroundColor Green
+  } else {
+    Write-Host -NoNewline ("[$Current/$Total] $Label... ") -ForegroundColor Cyan
+    Write-Log -Level 'STEP' -Message ("[$Current/$Total] $Label")
+  }
+}
+
 # ======================================================
 # UI
 # ======================================================
 function Show-Banner {
-@'
+  $color = if ($script:__bannerShown) { 'DarkGreen' } else { 'Green' }
+  $art = @'
 
  /$$   /$$           /$$               /$$$$$$ /$$$$$$$$
 | $$  | $$          | $$              |_  $$_/|__  $$__/
@@ -199,9 +212,10 @@ function Show-Banner {
 | $$  | $$| $$  | $$| $$| $$ | $$ | $$  | $$     | $$
 | $$  | $$|  $$$$$$/| $$| $$ | $$ | $$ /$$$$$$   | $$
 |__/  |__/ \______/ |__/|__/ |__/ |__/|______/   |__/
-
-           Among Us Mod Installer
-'@ | Write-Host -ForegroundColor Green
+'@
+  Write-Host $art -ForegroundColor $color
+  Write-Host ("           Among Us Mod Installer v{0}" -f $script:InstallerVersion) -ForegroundColor $color
+  $script:__bannerShown = $true
 }
 
 function Show-ProgressDots {
@@ -223,6 +237,50 @@ function Show-ProgressDots {
     $elapsed += $tickMs
   }
   Write-Host
+}
+
+function Show-Separator {
+  param([int]$Width = 50, [string]$Color = 'DarkGray')
+  $line = [string]::new([char]0x2550, $Width)
+  Write-Host $line -ForegroundColor $Color
+}
+
+function Show-SummaryBox {
+  param(
+    [string]$Title,
+    [System.Collections.Specialized.OrderedDictionary]$Data,
+    [string]$Color = 'DarkCyan'
+  )
+  $maxKey = 0
+  $maxVal = 0
+  foreach ($k in $Data.Keys) {
+    if ($k.Length -gt $maxKey) { $maxKey = $k.Length }
+    $v = [string]$Data[$k]
+    if ($v.Length -gt $maxVal) { $maxVal = $v.Length }
+  }
+  $inner = $maxKey + 3 + $maxVal
+  if ($Title.Length -gt $inner) { $inner = $Title.Length }
+  $inner += 2
+  $top    = [char]0x2554 + ([string]::new([char]0x2550, $inner)) + [char]0x2557
+  $bottom = [char]0x255A + ([string]::new([char]0x2550, $inner)) + [char]0x255D
+  $side   = [char]0x2551
+
+  Write-Host ''
+  Write-Host $top -ForegroundColor $Color
+  $titlePad = $inner - $Title.Length
+  $titleLeft = [Math]::Floor($titlePad / 2)
+  $titleRight = $titlePad - $titleLeft
+  Write-Host ($side + (' ' * $titleLeft) + $Title + (' ' * $titleRight) + $side) -ForegroundColor $Color
+  Write-Host ($side + ([string]::new([char]0x2500, $inner)) + $side) -ForegroundColor $Color
+  foreach ($k in $Data.Keys) {
+    $v = [string]$Data[$k]
+    $content = " $k : $v"
+    $pad = $inner - $content.Length
+    if ($pad -lt 0) { $pad = 0 }
+    Write-Host ($side + $content + (' ' * $pad) + $side) -ForegroundColor $Color
+  }
+  Write-Host $bottom -ForegroundColor $Color
+  Write-Host ''
 }
 
 function Read-Choice {
@@ -256,6 +314,25 @@ function Read-YN {
   }
 }
 
+function Wait-KeyPress {
+  param([string]$Message = 'Press any key to continue...')
+  Write-Host $Message -ForegroundColor DarkGray
+  try {
+    if ($Host.Name -eq 'ConsoleHost') {
+      $null = $Host.UI.RawUI.ReadKey('NoEcho,IncludeKeyDown')
+    } else {
+      Read-Host
+    }
+  } catch {
+    Read-Host
+  }
+}
+
+function Invoke-CompletionBeep {
+  if ($script:speed -le 0) { return }
+  try { [Console]::Beep(800, 200) } catch {}
+}
+
 # ======================================================
 # Networking
 # ======================================================
@@ -266,6 +343,107 @@ function Ensure-Tls12 {
       $cur -bor [Net.SecurityProtocolType]::Tls12 -bor [Net.SecurityProtocolType]::Tls13
   } catch {
     [Net.ServicePointManager]::SecurityProtocol = [Net.SecurityProtocolType]::Tls12
+  }
+}
+
+function Invoke-ApiWithSpinner {
+  param(
+    [Parameter(Mandatory)][string]$Uri,
+    [hashtable]$Headers = @{},
+    [string]$Label = 'Fetching'
+  )
+  Ensure-Tls12
+  $wc = New-Object System.Net.WebClient
+  foreach ($k in $Headers.Keys) { $wc.Headers[$k] = $Headers[$k] }
+  $task = $wc.DownloadStringTaskAsync([Uri]$Uri)
+
+  if ($script:speed -le 0) {
+    $task.Wait()
+  } else {
+    $frames = @('|','/','-','\')
+    $i = 0
+    while (-not $task.IsCompleted) {
+      Write-Host -NoNewline ("`r {0} {1}" -f $frames[$i % $frames.Count], $Label)
+      Start-Sleep -Milliseconds 120
+      $i++
+    }
+    Write-Host ("`r {0} {1}" -f ' ', (' ' * ($Label.Length + 2)))
+    Write-Host "`r" -NoNewline
+  }
+
+  if ($task.IsFaulted) {
+    $wc.Dispose()
+    throw $task.Exception.InnerException
+  }
+  $result = $task.Result
+  $wc.Dispose()
+  return $result
+}
+
+function Invoke-DownloadWithProgress {
+  param(
+    [Parameter(Mandatory)][string]$Uri,
+    [Parameter(Mandatory)][string]$OutFile,
+    [hashtable]$Headers = @{}
+  )
+  Ensure-Tls12
+  $req = [System.Net.HttpWebRequest]::Create($Uri)
+  $req.Method = 'GET'
+  $req.AllowAutoRedirect = $true
+  $req.UserAgent = 'AU-Installer'
+  foreach ($k in $Headers.Keys) {
+    switch ($k.ToLower()) {
+      'accept'       { $req.Accept = $Headers[$k] }
+      'content-type' { $req.ContentType = $Headers[$k] }
+      'user-agent'   { $req.UserAgent = $Headers[$k] }
+      default        { $req.Headers[$k] = $Headers[$k] }
+    }
+  }
+
+  $resp = $null; $respStream = $null; $fs = $null
+  try {
+    $resp = $req.GetResponse()
+    $totalBytes = $resp.ContentLength
+    $respStream = $resp.GetResponseStream()
+    $fs = [System.IO.File]::Create($OutFile)
+    $buffer = New-Object byte[] 65536
+    $downloaded = 0
+    $lastPct = -1
+
+    while ($true) {
+      $read = $respStream.Read($buffer, 0, $buffer.Length)
+      if ($read -le 0) { break }
+      $fs.Write($buffer, 0, $read)
+      $downloaded += $read
+
+      if ($totalBytes -gt 0) {
+        $pct = [int]([Math]::Floor(($downloaded / $totalBytes) * 100))
+        if ($pct -ne $lastPct) {
+          $lastPct = $pct
+          $barLen = 30
+          $filled = [int]([Math]::Floor($pct / 100 * $barLen))
+          $empty  = $barLen - $filled
+          $bar = '[' + ('#' * $filled) + (' ' * $empty) + ']'
+          $dlMB = '{0:F1}' -f ($downloaded / 1MB)
+          $totMB = '{0:F1}' -f ($totalBytes / 1MB)
+          Write-Host -NoNewline ("`r  {0} {1,3}%  {2} / {3} MB" -f $bar, $pct, $dlMB, $totMB)
+        }
+      } else {
+        $dlMB = '{0:F1}' -f ($downloaded / 1MB)
+        Write-Host -NoNewline ("`r  Downloaded {0} MB..." -f $dlMB)
+      }
+    }
+    Write-Host ''
+  } catch {
+    if ($fs) { $fs.Close(); $fs.Dispose() }
+    if (Test-Path -LiteralPath $OutFile) {
+      try { Remove-Item -LiteralPath $OutFile -Force -ErrorAction SilentlyContinue } catch {}
+    }
+    throw
+  } finally {
+    if ($fs)         { $fs.Close(); $fs.Dispose() }
+    if ($respStream) { $respStream.Close(); $respStream.Dispose() }
+    if ($resp)       { $resp.Close() }
   }
 }
 
@@ -439,6 +617,168 @@ function Compare-Versions {
 }
 
 # ======================================================
+# Manifest system
+# ======================================================
+function Get-ModManifest {
+  param([Parameter(Mandatory)][string]$GameDir)
+  $path = Join-Path $GameDir '.au_installer_manifest.json'
+  if (Test-Path -LiteralPath $path) {
+    try { return (Get-Content -Raw -LiteralPath $path | ConvertFrom-Json) } catch { return $null }
+  }
+  return $null
+}
+
+function Save-ModManifest {
+  param(
+    [Parameter(Mandatory)][string]$GameDir,
+    [Parameter(Mandatory)][string]$ContentRoot,
+    [Parameter(Mandatory)][string]$ModVersion,
+    [Parameter(Mandatory)][string]$ModTag,
+    [string]$GameVersion
+  )
+
+  $files = @()
+  $topDirs = @()
+
+  Get-ChildItem -LiteralPath $ContentRoot -Recurse -File -Force -ErrorAction SilentlyContinue | ForEach-Object {
+    $rel = $_.FullName.Substring($ContentRoot.Length).TrimStart('\', '/')
+    $files += $rel
+  }
+
+  Get-ChildItem -LiteralPath $ContentRoot -Directory -Force -ErrorAction SilentlyContinue | ForEach-Object {
+    $topDirs += $_.Name
+  }
+
+  $manifest = [pscustomobject]@{
+    installerVersion = '2.0.0'
+    modVersion       = $ModVersion
+    modTag           = $ModTag
+    installedAt      = (Get-Date).ToUniversalTime().ToString('o')
+    gameVersion      = $GameVersion
+    gameDir          = $GameDir
+    files            = $files
+    directories      = $topDirs
+  }
+
+  $manifest | ConvertTo-Json -Depth 4 | Set-Content -LiteralPath (Join-Path $GameDir '.au_installer_manifest.json') -Encoding UTF8
+  Write-Log -Level 'OK' -Message ("Manifest saved: {0} files, {1} directories" -f $files.Count, $topDirs.Count)
+}
+
+function Remove-ModFiles {
+  param([Parameter(Mandatory)][string]$GameDir)
+
+  $manifest = Get-ModManifest -GameDir $GameDir
+  if (-not $manifest) {
+    Write-Warn2 'No manifest found.'
+    return $false
+  }
+
+  $removed = 0
+  foreach ($f in $manifest.files) {
+    $full = Join-Path $GameDir $f
+    if (Test-Path -LiteralPath $full) {
+      try { Remove-Item -LiteralPath $full -Force -ErrorAction Stop; $removed++ } catch { Write-Warn2 "Could not remove: $f" }
+    }
+  }
+
+  # Remove top-level mod directories
+  foreach ($d in $manifest.directories) {
+    $full = Join-Path $GameDir $d
+    if (Test-Path -LiteralPath $full) {
+      try {
+        Get-ChildItem -LiteralPath $full -Recurse -Force -ErrorAction SilentlyContinue | ForEach-Object { try { $_.Attributes = 'Normal' } catch {} }
+        Remove-Item -LiteralPath $full -Recurse -Force -ErrorAction Stop
+      } catch { Write-Warn2 "Could not fully remove directory: $d" }
+    }
+  }
+
+  # Remove manifest file itself
+  $manifestPath = Join-Path $GameDir '.au_installer_manifest.json'
+  if (Test-Path -LiteralPath $manifestPath) {
+    try { Remove-Item -LiteralPath $manifestPath -Force -ErrorAction Stop } catch {}
+  }
+
+  Write-Log -Level 'OK' -Message ("Removed {0} mod files from {1}" -f $removed, $GameDir)
+  Write-Ok "Removed $removed mod files."
+  return $true
+}
+
+# ======================================================
+# Config persistence
+# ======================================================
+function Get-InstallerConfig {
+  param([string]$GameDir)
+  if (-not $GameDir) { $GameDir = Resolve-GameDirSilent }
+  if (-not $GameDir) { return $null }
+  $path = Join-Path $GameDir '.au_installer_config.json'
+  if (Test-Path -LiteralPath $path) {
+    try { return (Get-Content -Raw -LiteralPath $path | ConvertFrom-Json) } catch { return $null }
+  }
+  return $null
+}
+
+function Save-InstallerConfig {
+  param(
+    [Parameter(Mandatory)][string]$GameDir,
+    [int]$Speed = $script:speed
+  )
+  $config = [pscustomobject]@{
+    installerVersion = $script:InstallerVersion
+    gameDir          = $GameDir
+    speed            = $Speed
+    lastRun          = (Get-Date).ToUniversalTime().ToString('o')
+  }
+  $config | ConvertTo-Json -Depth 4 | Set-Content -LiteralPath (Join-Path $GameDir '.au_installer_config.json') -Encoding UTF8
+  Write-Log -Level 'OK' -Message ("Config saved to {0}" -f $GameDir)
+}
+
+function Show-WhatsNew {
+  param([switch]$Force)
+
+  $gd = $null
+  $cfg = $null
+  try {
+    $gd = Resolve-GameDirSilent
+    if ($gd) { $cfg = Get-InstallerConfig -GameDir $gd }
+  } catch {}
+
+  if (-not $Force) {
+    $savedVer = $null
+    if ($cfg -and $cfg.PSObject.Properties['installerVersion']) {
+      $savedVer = $cfg.installerVersion
+    }
+    if ($savedVer -eq $script:InstallerVersion) { return }
+  }
+
+  Write-Host ''
+  Show-Separator -Color 'Green'
+  Write-Host "  What's New in v$($script:InstallerVersion)" -ForegroundColor Green
+  Show-Separator -Color 'Green'
+  Write-Host ''
+  Write-Host '  Backend' -ForegroundColor Cyan
+  Write-Host '    - Manifest-based installs: tracks every file for clean' -ForegroundColor Gray
+  Write-Host '      uninstalls, updates, and repairs -- no leftover files' -ForegroundColor Gray
+  Write-Host '    - Game version detection: reads actual game version' -ForegroundColor Gray
+  Write-Host '      (e.g. 17.2.1) instead of Unity engine build number' -ForegroundColor Gray
+  Write-Host '    - Compatibility checks: warns before installing if your' -ForegroundColor Gray
+  Write-Host '      game version does not match the mod requirements' -ForegroundColor Gray
+  Write-Host ''
+  Write-Host '  User Experience' -ForegroundColor Cyan
+  Write-Host '    - Live download progress bars with file size and percent' -ForegroundColor Gray
+  Write-Host '    - Animated spinners during API calls' -ForegroundColor Gray
+  Write-Host '    - Numbered step indicators during install/update/repair' -ForegroundColor Gray
+  Write-Host '    - Summary boxes after every operation' -ForegroundColor Gray
+  Write-Host '    - Auto-launch game offer after install' -ForegroundColor Gray
+  Write-Host ''
+  Show-Separator -Color 'Green'
+  Write-Host ''
+  Wait-KeyPress
+
+  # Persist version so this only shows once
+  if ($gd) { Save-InstallerConfig -GameDir $gd }
+}
+
+# ======================================================
 # Resolve game dir
 # ======================================================
 function Resolve-GameDirSilent {
@@ -479,44 +819,37 @@ function Resolve-GameDirInteractive {
 }
 
 # ======================================================
-# Backup detection + state
+# State helpers
 # ======================================================
-function Find-BackupDirGlobal {
-  try {
-    $roots   = Get-SteamRoot
-    $commons = Get-SteamLibraries -SteamRoots $roots
-    foreach ($c in $commons) {
-      $cand = Join-Path $c 'Among Us - Bck'
-      if (Test-Path $cand) {
-        if (Test-Path (Join-Path $cand 'Among Us.exe')) { return (Resolve-Path $cand).Path }
-        try {
-          $any = Get-ChildItem -LiteralPath $cand -Recurse -File -ErrorAction Stop | Select-Object -First 1
-          if ($any) { return (Resolve-Path $cand).Path }
-        } catch {}
-      }
-    }
-  } catch {}
-  return $null
-}
-function Test-BackupAvailable {
+function Find-TouMiraDll {
   param([string]$GameDir)
-  try {
-    if ($GameDir -and (Test-Path $GameDir)) {
-      $parent = Split-Path -Parent $GameDir
-      $sibling = Join-Path $parent 'Among Us - Bck'
-      if (Test-Path $sibling) { return $true }
-    }
-  } catch {}
-  return [bool](Find-BackupDirGlobal)
+  if (-not $GameDir -or -not (Test-Path $GameDir)) { return $null }
+  foreach ($rel in @('BepInEx\plugins\TownOfUsMira.dll', 'TownOfUsMira.dll')) {
+    $p = Join-Path $GameDir $rel
+    if (Test-Path -LiteralPath $p) { return $p }
+  }
+  return $null
 }
 function Test-ModInstalled {
   param([string]$GameDir)
   if (-not $GameDir -or -not (Test-Path $GameDir)) { $GameDir = Resolve-GameDirSilent }
-  if (-not $GameDir) { return $false }
-  return Test-Path (Join-Path $GameDir 'TownOfUsMira.dll')
+  return [bool](Find-TouMiraDll -GameDir $GameDir)
 }
-function Get-ExeVersion {
+function Get-GameVersion {
   param([Parameter(Mandatory)][string]$GameDir)
+
+  # Primary: parse from Unity Addressables settings.json (catalog_XX.YY.ZZ.hash)
+  $settingsPath = Join-Path $GameDir 'Among Us_Data\StreamingAssets\aa\settings.json'
+  if (Test-Path -LiteralPath $settingsPath) {
+    try {
+      $raw = Get-Content -Raw -LiteralPath $settingsPath
+      if ($raw -match 'catalog_(\d+\.\d+(?:\.\d+)?)\.hash') {
+        return $matches[1]
+      }
+    } catch {}
+  }
+
+  # Fallback: exe FileVersion (returns Unity engine version, not ideal)
   $exe = Join-Path $GameDir 'Among Us.exe'
   if (Test-Path $exe) { return (Get-Item $exe).VersionInfo.FileVersion }
   return $null
@@ -526,8 +859,8 @@ function Get-InstalledTouMiraVersion {
   try {
     if (-not $GameDir -or -not (Test-Path $GameDir)) { $GameDir = Resolve-GameDirSilent }
     if (-not $GameDir) { return $null }
-    $dll = Join-Path $GameDir 'TownOfUsMira.dll'
-    if (Test-Path $dll) {
+    $dll = Find-TouMiraDll -GameDir $GameDir
+    if ($dll) {
       $v = (Get-Item $dll).VersionInfo.ProductVersion
       if ($v) { return $v.Trim() }
     }
@@ -539,14 +872,22 @@ function Get-InstalledTouMiraVersion {
 # BetterCrewLink helpers
 # ======================================================
 function Get-LatestBetterCrewLinkVersion {
+  # 10-minute session cache
+  if ($script:__BclLatestCache -and $script:__BclLatestCache.Time -gt (Get-Date).AddMinutes(-10)) {
+    return $script:__BclLatestCache.Value
+  }
+
   Ensure-Tls12
   try {
     $api  = 'https://api.github.com/repos/OhMyGuus/BetterCrewLink/releases/latest'
     $hdrs = @{ 'User-Agent'='AU-Installer'; 'Accept'='application/vnd.github+json' }
     Write-Log -Level 'ACTION' -Message ("GET {0}" -f $api)
-    $r = Invoke-WebRequest -UseBasicParsing -Uri $api -Headers $hdrs -ErrorAction Stop
-    $j = $r.Content | ConvertFrom-Json
-    if ($j.tag_name) { return $j.tag_name }
+    $raw = Invoke-ApiWithSpinner -Uri $api -Headers $hdrs -Label 'Checking for BetterCrewLink updates'
+    $j = $raw | ConvertFrom-Json
+    if ($j.tag_name) {
+      $script:__BclLatestCache = @{ Time = Get-Date; Value = $j.tag_name }
+      return $j.tag_name
+    }
   } catch {}
   try {
     $url = 'https://github.com/OhMyGuus/BetterCrewLink/releases/latest'
@@ -558,7 +899,11 @@ function Get-LatestBetterCrewLinkVersion {
     $resp = $req.GetResponse()
     $loc  = $resp.Headers['Location']
     $resp.Close()
-    if ($loc -and ($loc -match '/tag/([^/]+)$')) { return $matches[1] }
+    if ($loc -and ($loc -match '/tag/([^/]+)$')) {
+      $val = $matches[1]
+      $script:__BclLatestCache = @{ Time = Get-Date; Value = $val }
+      return $val
+    }
   } catch {}
   throw "Unable to determine latest BetterCrewLink version."
 }
@@ -688,10 +1033,7 @@ function Install-BetterCrewLink {
   Ensure-Tls12
 
   if (Test-BCLInstalled) {
-    function Read-YNLocal { param([string]$Prompt='Reinstall Better-CrewLink? (Y - for Yes, N - for No and press ENTER):')
-      while ($true) { $in = (Read-Host $Prompt).Trim(); if ($in -match '^(y|Y)$'){ Write-Log -Level 'ACTION' -Message 'BCL reinstall: YES'; return $true}; if($in -match '^(n|N)$'){ Write-Log -Level 'ACTION' -Message 'BCL reinstall: NO'; return $false}; Write-Warn2 "Please type 'y' or 'n'." }
-    }
-    if (-not (Read-YNLocal)) { Write-Info "Skipping Better-CrewLink install."; return }
+    if (-not (Read-YN -Prompt 'Reinstall Better-CrewLink? (y/n): ')) { Write-Info "Skipping Better-CrewLink install."; return }
     try { Uninstall-BetterCrewLink } catch { Write-Warn2 "Uninstall step failed: $($_.Exception.Message)" }
   }
 
@@ -704,8 +1046,7 @@ function Install-BetterCrewLink {
   Write-Info "Downloading installer: $($info.Name)"
   Write-Log -Level 'ACTION' -Message ("GET {0}" -f $info.Url)
   try {
-    $hdrs = @{ 'User-Agent'='AU-Installer' }
-    Invoke-WebRequest -UseBasicParsing -Uri $info.Url -OutFile $dest -Headers $hdrs -ErrorAction Stop
+    Invoke-DownloadWithProgress -Uri $info.Url -OutFile $dest
     Write-Ok "Saved: $dest"
   } catch {
     Write-Err2 "Download failed ($($info.Url)): $($_.Exception.Message)"
@@ -727,104 +1068,15 @@ function Install-BetterCrewLink {
   }
 
   while (-not (Test-BCLInstalled)) {
-    function Read-YNLocal2 { param([string]$Prompt='Still not detected. Return to menu? (Y - for Yes, N - for No and press ENTER):')
-      while ($true) { $in = (Read-Host $Prompt).Trim(); if ($in -match '^(y|Y)$'){ Write-Log -Level 'ACTION' -Message 'Return without BCL detection: YES'; return $true}; if($in -match '^(n|N)$'){ Write-Log -Level 'ACTION' -Message 'Return without BCL detection: NO'; return $false}; Write-Warn2 "Please type 'y' or 'n'." }
-    }
-    if (Read-YNLocal2) { Write-Warn2 "Returning to menu without confirming Better-CrewLink installation."; return }
+    if (Read-YN -Prompt 'Still not detected. Return to menu? (y/n): ') { Write-Warn2 "Returning to menu without confirming Better-CrewLink installation."; return }
     Write-Info "Waiting 30 seconds more..."; Start-Sleep -Seconds 30
   }
   Write-Ok "Better-CrewLink detected as installed."
 }
 
 # ======================================================
-# Backup helpers
+# Robocopy helper (mod overlay)
 # ======================================================
-function Get-DirStat {
-  param([Parameter(Mandatory)][string]$Path)
-  $files = Get-ChildItem -LiteralPath $Path -Recurse -File -ErrorAction SilentlyContinue
-  [PSCustomObject]@{
-    Count = ($files | Measure-Object).Count
-    Bytes = ($files | Measure-Object -Property Length -Sum).Sum
-  }
-}
-function Read-BackupMeta {
-  param([Parameter(Mandatory)][string]$BackupDir)
-  $metaPath = Join-Path $BackupDir '.au_backup_meta.json'
-  if (Test-Path $metaPath) {
-    try { return (Get-Content -Raw -LiteralPath $metaPath | ConvertFrom-Json) } catch { return $null }
-  }
-  return $null
-}
-function Save-BackupMeta {
-  param([Parameter(Mandatory)][string]$BackupDir,[Parameter(Mandatory)][string]$GameDir,[Parameter(Mandatory)]$Stat,[string]$ExeVersion,[string]$ModVersion)
-  $meta = [pscustomobject]@{
-    created    = (Get-Date)
-    gameDir    = $GameDir
-    exeVersion = $ExeVersion
-    count      = $Stat.Count
-    bytes      = [int64]$Stat.Bytes
-    modVersion = $ModVersion
-  }
-  $meta | ConvertTo-Json -Depth 4 | Set-Content -LiteralPath (Join-Path $BackupDir '.au_backup_meta.json') -Encoding UTF8
-}
-function Save-BackupMetaModVersion {
-  param([Parameter(Mandatory)][string]$BackupDir,[Parameter(Mandatory)][string]$Version)
-  $metaPath = Join-Path $BackupDir '.au_backup_meta.json'
-  $meta = if (Test-Path $metaPath) { Get-Content -Raw -LiteralPath $metaPath | ConvertFrom-Json } else { [pscustomobject]@{} }
-  $meta.modVersion = $Version
-  $meta | ConvertTo-Json -Depth 4 | Set-Content -LiteralPath $metaPath -Encoding UTF8
-}
-function Test-BackupIntegrity {
-  param([Parameter(Mandatory)][string]$GameDir,[Parameter(Mandatory)][string]$BackupDir)
-  $g = Get-DirStat -Path $GameDir
-  $b = Get-DirStat -Path $BackupDir
-  Write-Info ("Backup integrity - files: {0} vs {1}, bytes: {2:N0} vs {3:N0}" -f $g.Count,$b.Count,$g.Bytes,$b.Bytes)
-  return (($g.Count -eq $b.Count) -and ([int64]$g.Bytes -eq [int64]$b.Bytes))
-}
-
-function Copy-TreeRobocopy {
-  param(
-    [Parameter(Mandatory)][string]$Source,
-    [Parameter(Mandatory)][string]$Destination
-  )
-  if (-not $script:Paths) { Initialize-Paths }
-
-  New-Item -ItemType Directory -Force -Path $Destination | Out-Null
-
-  $tempLog = Join-Path $script:Paths.Temp ('robocopy-backup-{0:yyyyMMdd-HHmmss}.log' -f (Get-Date))
-  $args    = @("$Source","$Destination","/E","/COPY:DAT","/R:2","/W:1","/MT:8","/ETA","/UNILOG:$tempLog")
-
-  Write-Log -Level 'CMD' -Message ("robocopy {0} {1} /E /COPY:DAT /R:2 /W:1 /MT:8 /ETA /UNILOG:{2}" -f $Source,$Destination,$tempLog)
-  & robocopy @args | Out-Null
-  $code = $LASTEXITCODE
-
-  $tsStart = (Get-Date).ToString('yyyy-MM-dd HH:mm:ss')
-  Write-LogRaw -Lines @('','------------------------------------------------------------',"[$tsStart] [ROBOCOPY] START (backup)")
-
-  try {
-    if ((Test-Path -LiteralPath $tempLog) -and ((Get-Item -LiteralPath $tempLog).Length -gt 0)) {
-      $lines = Get-Content -LiteralPath $tempLog -Encoding Unicode
-      # Normalize and filter truly empty lines so Write-LogRaw never gets a single empty string
-      if ($lines -is [string]) {
-        if ($lines.Length -gt 0) { Write-LogRaw -Lines @($lines) }
-      } elseif ($lines) {
-        $norm = @($lines | Where-Object { $_ -ne $null -and $_ -ne '' })
-        if ($norm.Count -gt 0) { Write-LogRaw -Lines $norm }
-      }
-    } else {
-      Write-Log -Level 'WARN' -Message "Robocopy temp log exists but is empty (or missing): $tempLog"
-    }
-  } catch {
-    Write-Log -Level 'WARN' -Message "Failed reading robocopy temp log: $($_.Exception.Message)"
-  }
-
-  $tsEnd = (Get-Date).ToString('yyyy-MM-dd HH:mm:ss')
-  Write-LogRaw -Lines @("[$tsEnd] [ROBOCOPY] END (backup)",'------------------------------------------------------------','')
-
-  if ($code -ge 8) { throw "Robocopy failed with code $code" }
-  return $code
-}
-
 function Copy-TreeRobocopyQuiet {
   param(
     [Parameter(Mandatory)][string]$Source,
@@ -875,57 +1127,6 @@ function Copy-TreeRobocopyQuiet {
   if ($code -ge 8) { throw "Robocopy failed (mods) with code $code" }
 }
 
-function New-GameBackup {
-  param([Parameter(Mandatory)][string]$GameDir)
-
-  $backupDir = Join-Path (Split-Path -Parent $GameDir) 'Among Us - Bck'
-  $script:GameDir    = (Resolve-Path $GameDir).Path
-  $script:GameDirBck = $backupDir
-
-  if (Test-Path $backupDir) {
-    Write-Warn2 "Backup already exists at: $backupDir"
-    $meta     = Read-BackupMeta -BackupDir $backupDir
-    $current  = Get-DirStat -Path $GameDir
-    $verNow   = Get-ExeVersion -GameDir $GameDir
-    $upToDate = $false
-
-    if ($meta) {
-      $upToDate = ($meta.count -eq $current.Count) -and ([int64]$meta.bytes -eq [int64]$current.Bytes) -and ($meta.exeVersion -eq $verNow)
-    }
-
-    if ($upToDate) {
-      Write-Ok "Backup matches current installation (exe $verNow). Skipping copy."
-      return $backupDir
-    }
-
-    if ($meta -and $meta.exeVersion -ne $verNow) {
-      Write-Info "Different game version detected (backup: $($meta.exeVersion) vs current: $verNow)."
-    }
-
-    if ((Read-YQ "Refresh backup with current game files? (y/q): ") -eq 'q') {
-      Write-Info 'Keeping existing backup.'
-      return $backupDir
-    }
-
-    $stamp = Get-Date -Format 'yyyyMMdd-HHmmss'
-    Write-Info "Archiving old backup -> $backupDir ($stamp)"
-    Rename-Item -LiteralPath $backupDir -NewName (Split-Path -Leaf "$backupDir ($stamp)")
-  }
-
-  Write-Info "Starting backup with Robocopy..."
-  Copy-TreeRobocopy -Source $GameDir -Destination $backupDir
-
-  if (Test-BackupIntegrity -GameDir $GameDir -BackupDir $backupDir) {
-    Write-Ok 'Backup looks good.'
-  } else {
-    Write-Warn2 'Backup mismatch; proceed with caution.'
-  }
-
-  $stat = Get-DirStat -Path $GameDir
-  Save-BackupMeta -BackupDir $backupDir -GameDir $GameDir -Stat $stat -ExeVersion (Get-ExeVersion -GameDir $GameDir) -ModVersion $null
-  return $backupDir
-}
-
 # ======================================================
 # Mod download/install
 # ======================================================
@@ -949,87 +1150,6 @@ function Test-HttpUrlExists {
     return $false
   }
 }
-
-function Ensure-VTag {
-  param([string]$Tag)
-  if ([string]::IsNullOrWhiteSpace($Tag)) { return $Tag }
-  if ($Tag -match '^[vV]') { return $Tag.Trim() }
-  return ('v' + $Tag.Trim())
-}
-
-function Get-TouMiraRelease {
-  param([Parameter(Mandatory)][string]$Tag)
-
-  Ensure-Tls12
-
-  $hdrs = @{
-    'User-Agent' = 'AU-Installer'
-    'Accept'     = 'application/vnd.github+json'
-  }
-
-  $raw = $Tag.Trim()
-  $noV = Normalize-VersionTag $raw
-
-  # Try: exact input, no-v, v+noV (some repos use v-tags, this one uses no-v tags)
-  $candidates = @($raw, $noV, ("v$noV")) | Select-Object -Unique
-
-  foreach ($t in $candidates) {
-    $api = "https://api.github.com/repos/AU-Avengers/TOU-Mira/releases/tags/$t"
-    Write-Log -Level 'ACTION' -Message ("GET {0}" -f $api)
-    try {
-      $r = Invoke-WebRequest -UseBasicParsing -Uri $api -Headers $hdrs -ErrorAction Stop
-      return ($r.Content | ConvertFrom-Json)
-    } catch {
-      # try next candidate
-    }
-  }
-
-  throw "Unable to fetch release metadata for tag '$Tag' (tried: $($candidates -join ', '))."
-}
-
-function Score-TouMiraAssetName {
-  param([Parameter(Mandatory)][string]$Name)
-
-  $n = $Name.ToLowerInvariant()
-  $score = 0
-
-  # Prefer Steam builds
-  if ($n -match '\bsteam\b') { $score += 100 }
-
-  # Among Us is 32-bit (x86) historically; prefer x86 if present
-  if ($n -match '\bx86\b|32') { $score += 60 }
-
-  # Often their builds mention itch too (steam/itch bundle)
-  if ($n -match 'itch') { $score += 15 }
-
-  # Prefer archives
-  if ($n.EndsWith('.zip')) { $score += 20 }
-  elseif ($n.EndsWith('.7z')) { $score += 10 }
-
-  return $score
-}
-
-function Select-TouMiraAsset {
-  param([Parameter(Mandatory)]$Release)
-
-  if (-not $Release.assets) { return $null }
-
-  $assets = @($Release.assets) | Where-Object {
-    $_.name -and ($_.name -match '\.(zip|7z)$')
-  }
-
-  if (-not $assets -or $assets.Count -eq 0) { return $null }
-
-  $ranked = $assets | ForEach-Object {
-    [pscustomobject]@{
-      Asset = $_
-      Score = (Score-TouMiraAssetName -Name $_.name)
-    }
-  } | Sort-Object Score -Descending
-
-  return $ranked[0].Asset
-}
-
 
 function Expand-Zip {
   param([Parameter(Mandatory)][string]$ZipPath,[Parameter(Mandatory)][string]$Destination)
@@ -1057,21 +1177,21 @@ function Get-LatestTouMiraVersion {
 
   $hdrs = @{ 'User-Agent'='AU-Installer'; 'Accept'='application/vnd.github+json' }
 
-  # 1) Try GitHub API
+  # 1) Try GitHub API with spinner
   try {
     $api = 'https://api.github.com/repos/AU-Avengers/TOU-Mira/releases/latest'
     Write-Log -Level 'ACTION' -Message ("GET {0}" -f $api)
-    $r = Invoke-WebRequest -UseBasicParsing -Uri $api -Headers $hdrs -ErrorAction Stop
-    $j = $r.Content | ConvertFrom-Json
+    $raw = Invoke-ApiWithSpinner -Uri $api -Headers $hdrs -Label 'Checking for TOU-Mira updates'
+    $j = $raw | ConvertFrom-Json
 
     $tag = $null
     if ($j.tag_name) { $tag = [string]$j.tag_name }
     elseif ($j.name) { $tag = [string]$j.name }
 
     if ($tag) {
-      # Normalize => return "1.4.1" even if API ever returns "v1.4.1"
       $val = Normalize-VersionTag $tag
-      $script:__TouMiraLatestCache = @{ Time = Get-Date; Value = $val }
+      $body = if ($j.body) { [string]$j.body } else { $null }
+      $script:__TouMiraLatestCache = @{ Time = Get-Date; Value = $val; Body = $body }
       return $val
     }
   } catch {
@@ -1093,7 +1213,7 @@ function Get-LatestTouMiraVersion {
 
     if ($loc -and ($loc -match '/tag/([^/]+)$')) {
       $val = Normalize-VersionTag $matches[1]
-      $script:__TouMiraLatestCache = @{ Time = Get-Date; Value = $val }
+      $script:__TouMiraLatestCache = @{ Time = Get-Date; Value = $val; Body = $null }
       return $val
     }
   } catch {}
@@ -1101,6 +1221,33 @@ function Get-LatestTouMiraVersion {
   throw "Unable to determine latest TOU-Mira version."
 }
 
+# ======================================================
+# Game version compatibility
+# ======================================================
+function Get-TouMiraCompatibleVersions {
+  $body = $null
+  if ($script:__TouMiraLatestCache -and $script:__TouMiraLatestCache.Body) {
+    $body = $script:__TouMiraLatestCache.Body
+  }
+  if (-not $body) { return @() }
+
+  $versions = @()
+  # Match "SUPPORTS AMONG US 17.1 and 17.2.1"
+  if ($body -match '(?i)supports\s+among\s+us\s+([\d.]+(?:\s+and\s+[\d.]+)*)') {
+    $matches[1] -split '\s+and\s+' | ForEach-Object { $versions += $_.Trim() }
+  }
+  # Match "Among Us Version 17.1.0"
+  elseif ($body -match '(?i)among\s+us\s+version\s+([\d.]+)') {
+    $versions += $matches[1]
+  }
+  # Match "Among Us 17.0.1 - 17.1.0" (range)
+  elseif ($body -match '(?i)among\s+us\s+([\d.]+)\s*-\s*([\d.]+)') {
+    $versions += $matches[1]
+    $versions += $matches[2]
+  }
+
+  return $versions
+}
 
 function Download-TouMiraAssets {
   param(
@@ -1144,8 +1291,8 @@ function Download-TouMiraAssets {
   Write-Info ("Downloading: {0}" -f $picked.Url)
   Write-Log  -Level 'ACTION' -Message ("GET {0}" -f $picked.Url)
 
-  $hdrs = @{ 'User-Agent'='AU-Installer'; 'Accept'='application/octet-stream' }
-  Invoke-WebRequest -UseBasicParsing -Uri $picked.Url -OutFile $dest -Headers $hdrs -ErrorAction Stop
+  $hdrs = @{ 'Accept'='application/octet-stream' }
+  Invoke-DownloadWithProgress -Uri $picked.Url -OutFile $dest -Headers $hdrs
 
   [pscustomobject]@{
     StageDir = $StageDir
@@ -1177,16 +1324,89 @@ function Install-TouMira {
     Write-Info "Zip has files at root or multiple folders; copying from extraction root."
   }
 
+  # Save manifest before copying (enumerate what we're about to add)
+  $gameVer = Get-GameVersion -GameDir $GameDir
+  Save-ModManifest -GameDir $GameDir -ContentRoot $contentRoot -ModVersion $Version -ModTag $Version -GameVersion $gameVer
+
   Write-Info 'Applying mod files to game directory...'
   Copy-TreeRobocopyQuiet -Source $contentRoot -Destination $GameDir -FileMask '*'
 
-  # With v1.4.0+ the DLLs are provided via the zip content; these explicit
-  # downloads/copies are no longer needed.
-  # Copy-Item -LiteralPath $assets.MiraApi -Destination (Join-Path $GameDir 'MiraAPI.dll') -Force
-  # Copy-Item -LiteralPath $assets.TouMira -Destination (Join-Path $GameDir 'TownOfUsMira.dll') -Force
-
   Write-Ok 'Mod files applied.'
+}
 
+# ======================================================
+# Install / Uninstall / Update orchestrations
+# ======================================================
+function Install-ToU {
+  Initialize-Paths
+
+  # Step 1: Find game directory
+  Write-Step -Current 1 -Total 5 -Label 'Finding game directory'
+  $gameDir = Resolve-GameDirInteractive
+  if (-not $gameDir) { Write-Err2 "No valid '$($script:AppName)' instance found. Exiting."; return }
+  $script:GameDir = $gameDir
+  $gameVer = Get-GameVersion -GameDir $gameDir
+  Write-Step -Current 1 -Total 5 -Label 'Finding game directory' -Done
+  Write-Log -Level 'STATUS' -Message ("Install target: {0} (version {1})" -f $gameDir, $gameVer)
+
+  # Step 2: Resolve latest TOU-Mira
+  Write-Step -Current 2 -Total 5 -Label 'Resolving latest TOU-Mira'
+  $modVersion = Get-LatestTouMiraVersion
+  Write-Step -Current 2 -Total 5 -Label 'Resolving latest TOU-Mira' -Done
+
+  # Step 3: Check compatibility
+  Write-Step -Current 3 -Total 5 -Label 'Checking compatibility'
+  $compatOk = $true
+  try {
+    $compatVersions = Get-TouMiraCompatibleVersions
+    if ($compatVersions -and $compatVersions.Count -gt 0 -and $gameVer) {
+      $gameVerNorm = Normalize-VersionTag $gameVer
+      $isCompat = $false
+      foreach ($cv in $compatVersions) {
+        if ($gameVerNorm -like "$cv*") { $isCompat = $true; break }
+      }
+      if (-not $isCompat) {
+        Write-Step -Current 3 -Total 5 -Label 'Checking compatibility' -Done
+        Write-Warn2 "TOU-Mira $modVersion lists compatible versions: $($compatVersions -join ', ')"
+        Write-Warn2 "Your game version ($gameVer) may not be compatible."
+        Write-Host ''
+        $ans = Read-YQ 'Continue anyway? (y/q): '
+        if ($ans -eq 'q') { Write-TypeLines -Lines @('Aborted by user.') -Colors @('Yellow'); return }
+        $compatOk = $false
+      }
+    }
+  } catch {}
+  if ($compatOk) { Write-Step -Current 3 -Total 5 -Label 'Checking compatibility' -Done }
+
+  # Step 4: Download & install mod
+  Write-Step -Current 4 -Total 5 -Label 'Downloading & installing mod'
+  Install-TouMira -GameDir $gameDir -Version $modVersion
+  $manifest = Get-ModManifest -GameDir $gameDir
+  $fileCount = if ($manifest -and $manifest.files) { $manifest.files.Count } else { 0 }
+  Write-Step -Current 4 -Total 5 -Label 'Downloading & installing mod' -Done
+
+  # Summary box
+  $summaryData = [ordered]@{
+    'Mod version'    = $modVersion
+    'Game version'   = $(if ($gameVer) { $gameVer } else { 'unknown' })
+    'Files installed' = $fileCount
+    'Game directory'  = $gameDir
+  }
+  Show-SummaryBox -Title 'Installation Complete' -Data $summaryData -Color 'Green'
+
+  # Step 5: Save configuration
+  Write-Step -Current 5 -Total 5 -Label 'Saving configuration'
+  Save-InstallerConfig -GameDir $gameDir
+  Write-Step -Current 5 -Total 5 -Label 'Saving configuration' -Done
+
+  # Auto-launch offer
+  Write-Host ''
+  if (Read-YN -Prompt 'Launch Among Us now? (y/n): ') {
+    Write-Info 'Launching Among Us...'
+    try { Start-Process 'steam://rungameid/945360' } catch { Write-Warn2 "Could not launch: $($_.Exception.Message)" }
+  }
+
+  # Offer Better-CrewLink
   try {
     $installedBcl = Get-BCLInstalledVersion
     $latestTag    = $null
@@ -1225,129 +1445,71 @@ function Install-TouMira {
   }
 }
 
-# ======================================================
-# Install / Restore / Update orchestrations
-# ======================================================
-function Install-ToU {
-  Initialize-Paths
-
-  $gameDir = Resolve-GameDirInteractive
-  if (-not $gameDir) { Write-Err2 "No valid '$($script:AppName)' instance found. Exiting."; return }
-
-  $exe = Join-Path $gameDir 'Among Us.exe'
-  Write-TypeLines -Lines @(
-    "Using '$($script:AppName)' folder:",
-    "  $gameDir",
-    "Executable: $exe"
-  ) -Colors @('Green',$null,'Cyan')
-  Write-Log -Level 'STATUS' -Message ("Install target: {0}" -f $gameDir)
-
-  Write-Host ''
-  Write-TypeLines -Lines @('-' * 47) -Colors @('Red')
-  Write-Host ''
-
-  Write-TypeLines -Lines @(
-    'Manual validation (Steam client):',
-    "  Library -> Right-click '$($script:AppName)' -> Properties -> Installed Files -> Verify integrity of game files",
-    'If you already verified before launching this script, press Y and ENTER to continue...'
-  ) -Colors @('Cyan','DarkGray','Yellow')
-
-  Write-Host ''
-  $ans = Read-YQ 'When validation is finished, type y and press ENTER to continue (or q to quit): '
-  if ($ans -eq 'q') { Write-TypeLines -Lines @('Aborted by user.') -Colors @('Yellow'); return }
-
-  Write-Host ''
-  Write-Info 'Pre-mod step: create/verify backup (Among Us -> Among Us - Bck)'
-  $backupDir = New-GameBackup -GameDir $gameDir
-  Write-Ok   "Backup folder: $backupDir"
-
-  Write-Host ''
-  Write-Info 'Resolving latest TOU-Mira version from GitHub...'
-  $modVersion = Get-LatestTouMiraVersion
-  Write-Ok "Latest version: $modVersion"
-
-  Write-Info "Downloading & applying TOU-Mira ($modVersion)..."
-  Install-TouMira -GameDir $gameDir -Version $modVersion
-  Write-Ok "Mod installation complete."
-}
-
-function Restore-Vanilla {
+function Uninstall-Mod {
   param([string]$GameDir)
-
-  function Find-BackupDirLocal {
-    $roots   = Get-SteamRoot
-    $commons = Get-SteamLibraries -SteamRoots $roots
-    foreach ($c in $commons) {
-      $cand = Join-Path $c 'Among Us - Bck'
-      if (Test-Path $cand) {
-        $exe = Join-Path $cand 'Among Us.exe'
-        if (Test-Path $exe) { return (Resolve-Path $cand).Path }
-        try { if (Get-ChildItem -LiteralPath $cand -Recurse -File -ErrorAction Stop | Select-Object -First 1) { return (Resolve-Path $cand).Path } } catch {}
-      }
-    }
-    return $null
-  }
 
   if (-not $GameDir) {
     $GameDir = Resolve-GameDirInteractive
-    if (-not $GameDir) {
-      Write-Warn2 "Could not locate the current '$($script:AppName)' folder. Trying to locate backup instead..."
-      $bckOnly = Find-BackupDirLocal
-      if (-not $bckOnly) { Write-Err2 "No backup found. Nothing to restore."; return }
-      $parent  = Split-Path -Parent $bckOnly
-      $GameDir = Join-Path $parent 'Among Us'
-    }
+    if (-not $GameDir) { Write-Err2 "No valid '$($script:AppName)' instance found."; return }
   }
+  $script:GameDir = $GameDir
 
-  $GameDir   = (Resolve-Path $GameDir).Path
-  $parentDir = Split-Path -Parent $GameDir
-  $BackupDir = Join-Path $parentDir 'Among Us - Bck'
-
-  if (-not (Test-Path $BackupDir)) {
-    $found = Find-BackupDirLocal
-    if ($found) {
-      $BackupDir = $found
-      $parentDir = Split-Path -Parent $BackupDir
-      $GameDir   = Join-Path $parentDir 'Among Us'
+  $manifest = Get-ModManifest -GameDir $GameDir
+  if (-not $manifest) {
+    # Fallback: offer to remove known mod files
+    Write-Warn2 'No install manifest found. Offering fallback removal of known mod files.'
+    $knownFiles = @('winhttp.dll', 'doorstop_config.ini', '.doorstop_version')
+    $knownDirs  = @('BepInEx', 'dotnet')
+    $found = @()
+    foreach ($f in $knownFiles) {
+      $p = Join-Path $GameDir $f
+      if (Test-Path -LiteralPath $p) { $found += $f }
     }
-  }
-
-  if (-not (Test-Path $BackupDir)) { Write-Err2 "Backup not found: $BackupDir"; return }
-
-  Write-Info "This will restore vanilla by deleting:"
-  Write-Host "  $GameDir" -ForegroundColor Yellow
-  Write-Info "…and renaming backup:"
-  Write-Host "  $BackupDir" -ForegroundColor Yellow
-  if ((Read-YQ "Proceed? (y/q) type Y for yes and Q for quit and press ENTER: ") -eq 'q') { Write-Host 'Restore aborted.' -ForegroundColor Yellow; return }
-
-  if (Test-Path $GameDir) {
-    Write-Info "Removing current game folder..."
-    try {
-      Get-ChildItem -LiteralPath $GameDir -Recurse -Force -ErrorAction SilentlyContinue | ForEach-Object { try { $_.Attributes = 'Normal' } catch {} }
-      Remove-Item -LiteralPath $GameDir -Recurse -Force -ErrorAction Stop
-    } catch { Write-Warn2 "Direct delete failed: $($_.Exception.Message)"; Write-Err2 "Close the game/Steam and try again."; return }
+    foreach ($d in $knownDirs) {
+      $p = Join-Path $GameDir $d
+      if (Test-Path -LiteralPath $p) { $found += "$d/" }
+    }
+    # Also check for loose mod DLLs
+    foreach ($dll in @('TownOfUsMira.dll', 'MiraAPI.dll')) {
+      $p = Join-Path $GameDir $dll
+      if (Test-Path -LiteralPath $p) { $found += $dll }
+    }
+    if (-not $found) { Write-Ok 'No mod files detected. Nothing to remove.'; return }
+    Write-Info "Found mod files/folders: $($found -join ', ')"
+    if (-not (Read-YN -Prompt 'Remove these files? (y/n): ')) { Write-Info 'Aborted.'; return }
+    foreach ($f in ($knownFiles + @('TownOfUsMira.dll', 'MiraAPI.dll'))) {
+      $p = Join-Path $GameDir $f
+      if (Test-Path -LiteralPath $p) { try { Remove-Item -LiteralPath $p -Force -ErrorAction Stop } catch {} }
+    }
+    foreach ($d in $knownDirs) {
+      $p = Join-Path $GameDir $d
+      if (Test-Path -LiteralPath $p) {
+        try {
+          Get-ChildItem -LiteralPath $p -Recurse -Force -ErrorAction SilentlyContinue | ForEach-Object { try { $_.Attributes = 'Normal' } catch {} }
+          Remove-Item -LiteralPath $p -Recurse -Force -ErrorAction Stop
+        } catch {}
+      }
+    }
+    $uninstSummary = [ordered]@{ 'Method' = 'Fallback (known files)'; 'Items removed' = $found.Count }
+    Write-Ok 'Known mod files removed.'
   } else {
-    Write-Warn2 "Current game folder not found (nothing to delete): $GameDir"
+    $modVer = $manifest.modVersion
+    $fileCount = $manifest.files.Count
+    Write-Info "Manifest found: TOU-Mira $modVer, $fileCount files."
+    if (-not (Read-YN -Prompt 'Uninstall TOU-Mira? This will remove all mod files. (y/n): ')) { Write-Info 'Aborted.'; return }
+    Remove-ModFiles -GameDir $GameDir
+    $uninstSummary = [ordered]@{ 'Mod version' = $modVer; 'Files removed' = $fileCount; 'Game directory' = $GameDir }
   }
 
-  try {
-    Write-Info "Restoring backup to: $GameDir"
-    Rename-Item -LiteralPath $BackupDir -NewName 'Among Us' -ErrorAction Stop
-  } catch { Write-Err2 "Failed to restore backup: $($_.Exception.Message)"; return }
-
-  $restoredGameDir = Join-Path (Split-Path -Parent $BackupDir) 'Among Us'
-  $metaPath        = Join-Path $restoredGameDir '.au_backup_meta.json'
-  if (Test-Path $metaPath) {
-    try { Remove-Item -LiteralPath $metaPath -Force -ErrorAction Stop; Write-Info "Removed metadata: $metaPath" } catch { Write-Warn2 "Could not remove metadata file ($metaPath): $($_.Exception.Message)" }
+  # Remove config
+  $configPath = Join-Path $GameDir '.au_installer_config.json'
+  if (Test-Path -LiteralPath $configPath) {
+    try { Remove-Item -LiteralPath $configPath -Force -ErrorAction Stop } catch {}
   }
 
-  $restoredExe = Join-Path $restoredGameDir 'Among Us.exe'
-  if (Test-Path $restoredExe) { Write-Ok "Restore complete."; Write-Info "Executable: $restoredExe" }
-  else { Write-Warn2 "Restore finished, but 'Among Us.exe' was not found at:`n  $restoredGameDir" }
+  Show-SummaryBox -Title 'Uninstall Complete' -Data $uninstSummary -Color 'Red'
 
-  $script:GameDir    = $restoredGameDir
-  $script:GameDirBck = Join-Path (Split-Path -Parent $restoredGameDir) 'Among Us - Bck'
-
+  # Offer BCL uninstall
   try {
     if (Test-BCLInstalled) {
       Write-TypeLines -Lines @('Better-CrewLink is detected on this system. Do you want to uninstall it?') -Colors @('Magenta')
@@ -1356,8 +1518,6 @@ function Restore-Vanilla {
       } else {
         Write-Info 'Keeping Better-CrewLink installed.'
       }
-    } else {
-      Write-Info 'Better-CrewLink is not detected.'
     }
   } catch {
     Write-Warn2 "Could not check/uninstall Better-CrewLink: $($_.Exception.Message)"
@@ -1366,21 +1526,41 @@ function Restore-Vanilla {
 
 function Update-ModPack {
   param([string]$GameDir)
-  Write-Info "Update: restore vanilla, validate via Steam, and re-apply latest TOU-Mira."
-  try { Restore-Vanilla -GameDir $GameDir } catch { Write-Err2 "Restore failed: $($_.Exception.Message)"; return }
-  $restoredDir = $null
-  if ($script:GameDir -and (Test-Path $script:GameDir)) { $restoredDir = $script:GameDir }
-  if (-not $restoredDir -and $GameDir) {
-    $parent = Split-Path -Parent $GameDir
-    $cand   = Join-Path $parent 'Among Us'
-    if (Test-Path $cand) { $restoredDir = $cand }
+  if (-not $GameDir -or -not (Test-Path $GameDir)) { $GameDir = Resolve-GameDirSilent }
+  if (-not $GameDir) { Write-Warn2 'Could not find game directory.'; return }
+
+  Initialize-Paths
+
+  # Step 1: Remove old mod files
+  Write-Step -Current 1 -Total 3 -Label 'Removing current mod files'
+  $manifest = Get-ModManifest -GameDir $GameDir
+  if ($manifest) {
+    Remove-ModFiles -GameDir $GameDir
+  } else {
+    Write-Info 'No manifest found; applying update as overlay.'
   }
-  if (-not $restoredDir) { $restoredDir = Resolve-GameDirInteractive }
-  if (-not $restoredDir -or -not (Test-Path (Join-Path $restoredDir 'Among Us.exe'))) {
-    Write-Warn2 "Update aborted: restored game folder was not found (perhaps the restore was cancelled)."
-    return
+  Write-Step -Current 1 -Total 3 -Label 'Removing current mod files' -Done
+
+  # Step 2: Download and install latest
+  Write-Step -Current 2 -Total 3 -Label 'Downloading & installing latest'
+  $modVersion = Get-LatestTouMiraVersion
+  Install-TouMira -GameDir $GameDir -Version $modVersion
+  Write-Step -Current 2 -Total 3 -Label 'Downloading & installing latest' -Done
+
+  # Step 3: Save config
+  Write-Step -Current 3 -Total 3 -Label 'Saving configuration'
+  Save-InstallerConfig -GameDir $GameDir
+  Write-Step -Current 3 -Total 3 -Label 'Saving configuration' -Done
+
+  $gameVer = Get-GameVersion -GameDir $GameDir
+  $newManifest = Get-ModManifest -GameDir $GameDir
+  $fileCount = if ($newManifest -and $newManifest.files) { $newManifest.files.Count } else { 0 }
+  $summaryData = [ordered]@{
+    'Mod version'     = $modVersion
+    'Game version'    = $(if ($gameVer) { $gameVer } else { 'unknown' })
+    'Files installed' = $fileCount
   }
-  Install-ToU
+  Show-SummaryBox -Title 'Update Complete' -Data $summaryData -Color 'Yellow'
 }
 
 # ======================================================
@@ -1398,9 +1578,11 @@ function Get-MenuAvailability {
   $latestMod = if ($latestModTag) { Normalize-VersionTag $latestModTag } else { $null }
   $latestBcl = if ($latestBclTag) { Normalize-VersionTag $latestBclTag } else { $null }
 
-  $modInstalled   = Test-ModInstalled -GameDir $gameDir
-  $bclInstalled   = Test-BCLInstalled
-  $backupAvailable= Test-BackupAvailable -GameDir $gameDir
+  $modInstalled    = Test-ModInstalled -GameDir $gameDir
+  $bclInstalled    = Test-BCLInstalled
+  $manifest        = if ($gameDir) { Get-ModManifest -GameDir $gameDir } else { $null }
+  $manifestExists  = [bool]$manifest
+  $gameVersion     = if ($gameDir) { Get-GameVersion -GameDir $gameDir } else { $null }
 
   $modNeedsUpdate = $false
   if ($installedMod -and $latestMod) { if ((Compare-Versions $installedMod $latestMod) -lt 0) { $modNeedsUpdate = $true } }
@@ -1410,13 +1592,14 @@ function Get-MenuAvailability {
 
   [pscustomobject]@{
     GameDir          = $gameDir
+    GameVersion      = $gameVersion
     ModInstalled     = $modInstalled
     BclInstalled     = $bclInstalled
-    BackupAvailable  = $backupAvailable
+    ManifestExists   = $manifestExists
     AnyUpdate        = $anyUpdate
     ModNeedsUpdate   = $modNeedsUpdate
     BclNeedsUpdate   = $bclNeedsUpdate
-    RepairAvailable  = ($backupAvailable -or $bclInstalled)
+    RepairAvailable  = ($modInstalled -or $bclInstalled)
     InstalledModVer  = $installedMod
     InstalledBclVer  = $installedBcl
     LatestMod        = $latestMod
@@ -1432,9 +1615,10 @@ function Show-StatusPanel {
 
   Write-LogSection -Title "CURRENT STATE SNAPSHOT"
   Write-Log -Level 'STATUS' -Message ("GameDir: {0}" -f (Coalesce $m.GameDir '<not found>'))
+  Write-Log -Level 'STATUS' -Message ("GameVersion: {0}" -f (Coalesce $m.GameVersion '<n/a>'))
   Write-Log -Level 'STATUS' -Message ("ModInstalled: {0}, Version: {1}, Latest: {2}" -f $m.ModInstalled, (Coalesce $m.InstalledModVer '<n/a>'), (Coalesce $m.LatestMod '<n/a>'))
   Write-Log -Level 'STATUS' -Message ("BCL Installed: {0}, Version: {1}, Latest: {2}" -f $m.BclInstalled, (Coalesce $m.InstalledBclVer '<n/a>'), (Coalesce $m.LatestBcl '<n/a>'))
-  Write-Log -Level 'STATUS' -Message ("BackupAvailable: {0}" -f $m.BackupAvailable)
+  Write-Log -Level 'STATUS' -Message ("ManifestExists: {0}" -f $m.ManifestExists)
   Write-Log -Level 'STATUS' -Message ("AnyUpdate: {0} (ModNeedsUpdate: {1}, BclNeedsUpdate: {2})" -f $m.AnyUpdate, $m.ModNeedsUpdate, $m.BclNeedsUpdate)
 
   $modBadge = ''
@@ -1448,14 +1632,23 @@ function Show-StatusPanel {
 
   $modText = if ($m.InstalledModVer) { $m.InstalledModVer } else { 'Not installed' }
   $bclText = if ($m.InstalledBclVer) { $m.InstalledBclVer } else { 'Not installed' }
+  $modeText = if ($script:speed -le 0) { 'Fast' } else { 'Normal' }
 
-  Write-Host -NoNewline 'Among Us Mod: ' -ForegroundColor Cyan
+  if ($m.GameVersion) {
+    Write-Host -NoNewline 'Among Us: ' -ForegroundColor Cyan
+    Write-Host $m.GameVersion -ForegroundColor Yellow
+  }
+
+  Write-Host -NoNewline 'TOU-Mira: ' -ForegroundColor Cyan
   if ($modBadge) { Write-Host -NoNewline $modText -ForegroundColor Yellow; Write-Host (' ' + $modBadge) -ForegroundColor Yellow }
   else { Write-Host $modText -ForegroundColor Yellow }
 
   Write-Host -NoNewline 'BetterCrewLink: ' -ForegroundColor Cyan
   if ($bclBadge) { Write-Host -NoNewline $bclText -ForegroundColor Yellow; Write-Host (' ' + $bclBadge) -ForegroundColor Yellow }
   else { Write-Host $bclText -ForegroundColor Yellow }
+
+  Write-Host -NoNewline 'Display: ' -ForegroundColor Cyan
+  Write-Host $modeText -ForegroundColor Yellow
 }
 
 function Show-Menu {
@@ -1466,16 +1659,18 @@ function Show-Menu {
   Write-Host ''
   $line1 = if ($m.ModInstalled) { '  1) Install Among Us - ToU Mira (already installed)' } else { '  1) Install Among Us - ToU Mira' }
   $line2 = if ($m.AnyUpdate) { '  2) Update' } else { '  2) Update (no updates available)' }
-  $line3 = if ($m.BackupAvailable) { '  3) Restore Vanilla' } else { '  3) Restore Vanilla (no backup found)' }
+  $line3 = if ($m.ModInstalled) { '  3) Uninstall TOU-Mira' } else { '  3) Uninstall TOU-Mira (not installed)' }
   $line4 = if ($m.BclInstalled) { '  4) Install BetterCrewLink (already installed)' } else { '  4) Install BetterCrewLink' }
   $line5 = if ($m.RepairAvailable) { '  5) Repair' } else { '  5) Repair (nothing to repair)' }
 
-  Write-TypeLines -Lines @($line1,$line2,$line3,$line4,$line5,'  Q) Quit') -TotalSeconds $script:speed -Colors @(
+  Write-TypeLines -Lines @($line1,$line2,$line3,$line4,$line5,'  W) What''s New','  F) Toggle fast mode','  Q) Quit') -TotalSeconds $script:speed -Colors @(
     $(if ($m.ModInstalled) {'DarkGray'} else {'Green'}),
     $(if ($m.AnyUpdate) {'Yellow'} else {'DarkGray'}),
-    $(if ($m.BackupAvailable) {'Red'} else {'DarkGray'}),
+    $(if ($m.ModInstalled) {'Red'} else {'DarkGray'}),
     $(if ($m.BclInstalled) {'DarkGray'} else {'Magenta'}),
     $(if ($m.RepairAvailable) {'Yellow'} else {'DarkGray'}),
+    'DarkCyan',
+    'Cyan',
     'DarkGray'
   )
   Write-Host ''
@@ -1484,29 +1679,44 @@ function Show-Menu {
 
 function Repair-Mod {
   param([string]$GameDir)
-  $backup = Find-BackupDirGlobal
-  if (-not $backup) {
-    Write-Warn2 'No backup found — cannot repair the mod safely.'
-    if (Read-YN -Prompt 'Would you like to perform a fresh install of TOU-Mira instead? (y/n): ') {
-      try { Install-ToU } catch { Write-Err2 "Fresh install failed: $($_.Exception.Message)" }
-    } else {
-      Write-Info 'Okay — when you are ready, choose "Install Among Us - ToU Mira" from the main menu.'
-    }
+  if (-not $GameDir -or -not (Test-Path $GameDir)) { $GameDir = Resolve-GameDirSilent }
+  if (-not $GameDir) { Write-Warn2 'Could not find game directory.'; return }
+
+  Initialize-Paths
+
+  # Step 1: Remove existing mod files
+  Write-Step -Current 1 -Total 3 -Label 'Removing current mod files'
+  $manifest = Get-ModManifest -GameDir $GameDir
+  if ($manifest) {
+    Remove-ModFiles -GameDir $GameDir
+  }
+  Write-Step -Current 1 -Total 3 -Label 'Removing current mod files' -Done
+
+  # Step 2: Re-install latest
+  Write-Step -Current 2 -Total 3 -Label 'Re-installing latest TOU-Mira'
+  try {
+    $modVersion = Get-LatestTouMiraVersion
+    Install-TouMira -GameDir $GameDir -Version $modVersion
+    Write-Step -Current 2 -Total 3 -Label 'Re-installing latest TOU-Mira' -Done
+  } catch {
+    Write-Err2 "Re-install failed: $($_.Exception.Message)"
     return
   }
-  try {
-    Write-Info 'Repairing Mod: restoring vanilla from backup...'
-    Restore-Vanilla -GameDir $GameDir
-  } catch {
-    Write-Err2 "Restore step failed: $($_.Exception.Message)"
-    return
+
+  # Step 3: Save config
+  Write-Step -Current 3 -Total 3 -Label 'Saving configuration'
+  Save-InstallerConfig -GameDir $GameDir
+  Write-Step -Current 3 -Total 3 -Label 'Saving configuration' -Done
+
+  $gameVer = Get-GameVersion -GameDir $GameDir
+  $newManifest = Get-ModManifest -GameDir $GameDir
+  $fileCount = if ($newManifest -and $newManifest.files) { $newManifest.files.Count } else { 0 }
+  $summaryData = [ordered]@{
+    'Mod version'     = $modVersion
+    'Game version'    = $(if ($gameVer) { $gameVer } else { 'unknown' })
+    'Files installed' = $fileCount
   }
-  try {
-    Write-Info 'Re-applying the latest TOU-Mira...'
-    Install-ToU
-  } catch {
-    Write-Err2 "Re-install step failed: $($_.Exception.Message)"
-  }
+  Show-SummaryBox -Title 'Repair Complete' -Data $summaryData -Color 'Yellow'
 }
 function Repair-BCL {
   if (-not (Test-BCLInstalled)) {
@@ -1522,7 +1732,8 @@ function Repair-BCL {
   try { Install-BetterCrewLink } catch { Write-Err2 "Reinstall step failed: $($_.Exception.Message)" }
 }
 function Repair-All {
-  try { Repair-Mod } catch { Write-Warn2 "Mod repair encountered an issue: $($_.Exception.Message)" }
+  param([string]$GameDir)
+  try { Repair-Mod -GameDir $GameDir } catch { Write-Warn2 "Mod repair encountered an issue: $($_.Exception.Message)" }
   try { Repair-BCL } catch { Write-Warn2 "BCL repair encountered an issue: $($_.Exception.Message)" }
 }
 function Invoke-RepairFlow {
@@ -1536,10 +1747,10 @@ function Invoke-RepairFlow {
   while ($true) {
     $sel = (Read-Host 'Choose 1/2/3/4').Trim()
     switch ($sel) {
-      '1' { Repair-All;            return }
-      '2' { Repair-Mod;            return }
-      '3' { Repair-BCL;            return }
-      '4' { Write-Info 'Aborted.'; return }
+      '1' { Repair-All -GameDir $m.GameDir;  return }
+      '2' { Repair-Mod -GameDir $m.GameDir;  return }
+      '3' { Repair-BCL;                      return }
+      '4' { Write-Info 'Aborted.';           return }
       default { Write-Warn2 'Please enter 1, 2, 3 or 4.' }
     }
   }
@@ -1603,7 +1814,7 @@ function Invoke-UpdateFlow {
     $sel = (Read-Host 'Choose 1/2/3/4').Trim()
     switch ($sel) {
       '1' { Update-AllSmart; break }
-      '2' { Update-ToUMiraSmart; break }
+      '2' { Update-ToUMiraSmart -GameDir $gameDir; break }
       '3' { Install-BetterCrewLink; break }
       '4' { Write-Info 'Aborted.'; break }
       default { Write-Warn2 'Please enter 1, 2, 3 or 4.' }
@@ -1615,10 +1826,28 @@ function Invoke-UpdateFlow {
 # MAIN
 # ======================================================
 Start-InstallerLog
+
+# Load persisted config
+try {
+  $savedGameDir = Resolve-GameDirSilent
+  if ($savedGameDir) {
+    $cfg = Get-InstallerConfig -GameDir $savedGameDir
+    if ($cfg) {
+      if ($null -ne $cfg.speed) { $script:speed = $cfg.speed }
+      if ($cfg.gameDir -and (Test-Path $cfg.gameDir)) { $script:GameDir = $cfg.gameDir }
+      Write-Log -Level 'INFO' -Message ("Config loaded: speed={0}, gameDir={1}" -f $script:speed, $script:GameDir)
+    }
+  }
+} catch {
+  Write-Log -Level 'WARN' -Message ("Config load failed: {0}" -f $_.Exception.Message)
+}
+
+Show-WhatsNew
+
 try {
   $state = Get-MenuAvailability
   Write-LogSection -Title "INITIAL INSTALLED COMPONENTS"
-  Write-Log -Level 'STATUS' -Message ("Among Us Mod: {0}" -f ($(if ($state.InstalledModVer) { $state.InstalledModVer } else { 'Not installed' })))
+  Write-Log -Level 'STATUS' -Message ("TOU-Mira: {0}" -f ($(if ($state.InstalledModVer) { $state.InstalledModVer } else { 'Not installed' })))
   Write-Log -Level 'STATUS' -Message ("BetterCrewLink: {0}" -f ($(if ($state.InstalledBclVer) { $state.InstalledBclVer } else { 'Not installed' })))
 } catch {
   Write-Log -Level 'ERROR' -Message ("Initial snapshot failed: {0}" -f $_.Exception.Message)
@@ -1626,61 +1855,63 @@ try {
 
 :MainMenu while ($true) {
   try {
-    #Clear-Host
+    Clear-Host
     $m = Get-MenuAvailability
     Show-Banner
-    Show-StatusPanel
-    Show-Menu
+    Show-Separator
+    Show-StatusPanel -State $m
+    Show-Separator
+    Show-Menu -State $m
 
-    $allowed = @('1','2','3','4','5','q','Q')
-    $choice  = Read-Choice -Prompt 'Select option (1/2/3/4/5 or Q to quit and press ENTER) [1]:' -Allowed $allowed -Default '1'
+    $allowed = @('1','2','3','4','5','w','W','f','F','q','Q')
+    $choice  = Read-Choice -Prompt 'Select option (1-5, W, F, Q and press ENTER) [1]:' -Allowed $allowed -Default '1'
 
-    switch ($choice) {
-      '1' {
+    switch -Regex ($choice) {
+      '^1$' {
         if ($m.ModInstalled) { Write-Warn2 'Mod is already installed.' }
         else { try { Install-ToU } finally { Remove-WorkingFolder } }
-        Write-TypeLines -Lines @('Done. Returning to menu...') -TotalSeconds $script:speed -Colors @('Green')
       }
-      '2' {
+      '^2$' {
         if (-not $m.AnyUpdate) { Write-Ok 'No updates available.' }
         else { try { Invoke-UpdateFlow } finally { Remove-WorkingFolder } }
-        Write-TypeLines -Lines @('Done. Returning to menu...') -TotalSeconds $script:speed -Colors @('Green')
       }
-      '3' {
-        if (-not $m.BackupAvailable) { Write-Warn2 'No backup found — nothing to restore.' }
-        else { try { Restore-Vanilla } finally { Remove-WorkingFolder } }
-        Write-TypeLines -Lines @('Done. Returning to menu...') -TotalSeconds $script:speed -Colors @('Green')
+      '^3$' {
+        if (-not $m.ModInstalled) { Write-Warn2 'TOU-Mira is not installed -- nothing to uninstall.' }
+        else { try { Uninstall-Mod -GameDir $m.GameDir } finally { Remove-WorkingFolder } }
       }
-      '4' {
+      '^4$' {
         if ($m.BclInstalled) { Write-Warn2 'Better-CrewLink is already installed.' }
         else { try { Install-BetterCrewLink } finally { Remove-WorkingFolder } }
-        Write-TypeLines -Lines @('Done. Returning to menu...') -TotalSeconds $script:speed -Colors @('Green')
       }
-      '5' {
+      '^5$' {
         if (-not $m.RepairAvailable) { Write-Ok 'Nothing to repair right now.' }
         else { try { Invoke-RepairFlow } finally { Remove-WorkingFolder } }
-        Write-TypeLines -Lines @('Done. Returning to menu...') -TotalSeconds $script:speed -Colors @('Green')
       }
-      'q' {
-        Write-TypeLines -Lines @('Goodbye!') -TotalSeconds $script:speed -Colors @('Green')
-        Remove-WorkingFolder
-        break MainMenu
+      '^[wW]$' {
+        Show-WhatsNew -Force
       }
-      'Q' {
+      '^[fF]$' {
+        if ($script:speed -le 0) { $script:speed = 1; Write-Ok 'Display mode: Normal' }
+        else { $script:speed = 0; Write-Ok 'Display mode: Fast' }
+        if ($m.GameDir) { Save-InstallerConfig -GameDir $m.GameDir }
+      }
+      '^[qQ]$' {
         Write-TypeLines -Lines @('Goodbye!') -TotalSeconds $script:speed -Colors @('Green')
         Remove-WorkingFolder
         break MainMenu
       }
     }
 
-    UiSleep -Milliseconds 700
+    if ($choice -notmatch '^[fFqQwW]$') {
+      Invoke-CompletionBeep
+      Wait-KeyPress
+    }
   }
   catch {
     Write-Err2 "ERROR: $($_.Exception.Message)"
     Write-TypeLines -Lines @('Returning to menu...') -TotalSeconds $script:speed -Colors @('Yellow')
-    UiSleep -Milliseconds 900
+    Wait-KeyPress
   }
 }
 
 Write-Log -Level 'INFO' -Message ("===== Session End =====")
-
