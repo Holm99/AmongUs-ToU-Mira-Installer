@@ -1,4 +1,4 @@
-﻿# Requires PowerShell 5.1
+# Requires PowerShell 5.1
 Set-StrictMode -Version 2.0
 $ErrorActionPreference = 'Stop'
 [Console]::OutputEncoding = [System.Text.Encoding]::UTF8
